@@ -8,12 +8,14 @@ namespace UnifiSharp;
 public sealed record UnifiClientOptions
 {
     /// <summary>
-    /// Base URL of the Network integration API. The path differs by deployment:
+    /// Base URL of the Network integration API — <b>without</b> the version
+    /// segment (the generated client appends <c>/v1/…</c> itself). The path
+    /// differs by deployment:
     /// <list type="bullet">
-    /// <item>UniFi OS console (Cloud Gateway / UDM): <c>https://&lt;host&gt;/proxy/network/integration/v1</c></item>
-    /// <item>Standalone Network Application (e.g. the <c>.containers/unifi</c> test
-    /// container): <c>https://&lt;host&gt;:8443/integration/v1</c> (no <c>/proxy/network</c> prefix)</item>
+    /// <item>UniFi OS (Cloud Gateway / UDM / UniFi OS Server): <c>https://&lt;host&gt;/proxy/network/integration</c></item>
+    /// <item>Standalone Network Application: <c>https://&lt;host&gt;:8443/integration</c> (no <c>/proxy/network</c> prefix)</item>
     /// </list>
+    /// Verified against the <c>.containers/unifi</c> UniFi OS Server container.
     /// </summary>
     public required Uri BaseUrl { get; init; }
 

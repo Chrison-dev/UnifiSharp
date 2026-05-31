@@ -45,20 +45,20 @@ dotnet test
 ```csharp
 var client = UnifiApi.Create(new UnifiClientOptions
 {
-    // UniFi OS console (Cloud Gateway/UDM):  https://<host>/proxy/network/integration/v1
-    // Standalone app (the test container):    https://<host>:8443/integration/v1
-    BaseUrl = new Uri("https://192.168.1.1/proxy/network/integration/v1"),
+    // NOTE: no /v1 — the generated client appends the version segment itself.
+    // UniFi OS (Cloud Gateway/UDM/UniFi OS Server):  https://<host>/proxy/network/integration
+    // Standalone Network Application:                 https://<host>:8443/integration
+    BaseUrl = new Uri("https://192.168.1.1/proxy/network/integration"),
     ApiKey  = "<local API key — Settings → Integrations>",
-    VerifyTls = false,   // UniFi OS / standalone both use a self-signed LAN cert
+    VerifyTls = false,   // self-signed LAN cert
 });
 // read endpoints: sites, networks, WLANs, firewall zones, devices, clients …
 ```
 
-> **Base-URL note (verified 2026-05-31):** the integration API lives at
-> `/proxy/network/integration/v1` on UniFi OS consoles but at `/integration/v1`
-> on a standalone Network Application (the `.containers/unifi` test container,
-> Network 10.3.58). An unauthenticated request returns `403` (path mounted, key
-> required) — so configure `BaseUrl` to match your target.
+> **Base-URL note (verified 2026-05-31 against the `.containers/unifi` UniFi OS
+> Server container):** set `BaseUrl` to the integration root **without** `/v1` —
+> the client adds `/v1/…`. UniFi OS exposes it under `/proxy/network/integration`;
+> a standalone Network Application omits that prefix (`/integration`).
 
 ## Packages
 
