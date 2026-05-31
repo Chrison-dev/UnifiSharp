@@ -7,8 +7,8 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Authors>Chrison Simtian</Authors>
     <Company>Homelab</Company>
-    <RepositoryUrl>https://github.com/ChrisonSimtian/UnifiSharp</RepositoryUrl>
-    <PackageProjectUrl>https://github.com/ChrisonSimtian/UnifiSharp</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/Chrison-dev/UnifiSharp</RepositoryUrl>
+    <PackageProjectUrl>https://github.com/Chrison-dev/UnifiSharp</PackageProjectUrl>
     <RepositoryType>git</RepositoryType>
     <PackageLicenseExpression>Unlicense</PackageLicenseExpression>
     <PublishRepositoryUrl>true</PublishRepositoryUrl>
