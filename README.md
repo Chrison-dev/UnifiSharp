@@ -2,9 +2,9 @@
 
 A C# client for the **UniFi Network API** — **mostly code-generated** from
 Ubiquiti's official OpenAPI spec, with a thin hand-written runtime for auth and
-transport. Sibling to [ProxmoxSharp](https://github.com/ChrisonSimtian/ProxmoxSharp);
+transport. Sibling to [ProxmoxSharp](https://github.com/Chrison-dev/ProxmoxSharp);
 built to bring the UniFi-managed network under the homelab's C#-native IaC. See
-[ADR-0003](https://github.com/ChrisonSimtian/Homelab/blob/main/docs/adr/ADR-0003-unifisharp.md).
+[ADR-0003](https://github.com/Chrison-dev/Homelab/blob/main/docs/adr/ADR-0003-unifisharp.md).
 
 ## Approach
 
@@ -88,6 +88,6 @@ unifisharp discover    # JSON snapshot: sites + device/client/network counts
 
 Read client + `discover` + `unifisharp` CLI building from the 10.4.57 spec.
 Live read tests skip without `UNIFI_*` — run them against the
-[`.containers/unifi`](https://github.com/ChrisonSimtian/Homelab/tree/main/.containers/unifi)
+[`.containers/unifi`](https://github.com/Chrison-dev/Homelab/tree/main/.containers/unifi)
 test controller (never the live network). **Next:** the legacy write adapter
 (firewall rules / port profiles) once verified against the container.
