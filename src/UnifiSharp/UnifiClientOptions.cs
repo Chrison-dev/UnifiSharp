@@ -8,8 +8,12 @@ namespace UnifiSharp;
 public sealed record UnifiClientOptions
 {
     /// <summary>
-    /// Base URL of the Network integration API, e.g.
-    /// <c>https://192.168.1.1/proxy/network/integration/v1</c>.
+    /// Base URL of the Network integration API. The path differs by deployment:
+    /// <list type="bullet">
+    /// <item>UniFi OS console (Cloud Gateway / UDM): <c>https://&lt;host&gt;/proxy/network/integration/v1</c></item>
+    /// <item>Standalone Network Application (e.g. the <c>.containers/unifi</c> test
+    /// container): <c>https://&lt;host&gt;:8443/integration/v1</c> (no <c>/proxy/network</c> prefix)</item>
+    /// </list>
     /// </summary>
     public required Uri BaseUrl { get; init; }
 
