@@ -65,9 +65,21 @@ Integrations) or the [`beezly/unifi-apis`](https://github.com/beezly/unifi-apis)
 mirror into `src/UnifiSharp.Api/schema/`, update the filename + `VersionPrefix`,
 rebuild.
 
+## CLI (`unifisharp`)
+
+A `dotnet` global tool over the library:
+
+```bash
+export UNIFI_BASE_URL="https://localhost:8443/proxy/network/integration/v1"
+export UNIFI_API_KEY="…"  UNIFI_VERIFY_TLS=false
+unifisharp sites       # list sites
+unifisharp discover    # JSON snapshot: sites + device/client/network counts
+```
+
 ## Status
 
-Scaffold + read client building from the 10.4.57 spec (455 generated files).
-**Next:** `discover` + a CLI (`unifisharp` dotnet tool, replaces the MCP),
-then the legacy write adapter. Tests against a Dockerised controller
-(`lscr.io/linuxserver/unifi-network-application`) — never the live network.
+Read client + `discover` + `unifisharp` CLI building from the 10.4.57 spec.
+Live read tests skip without `UNIFI_*` — run them against the
+[`.containers/unifi`](https://github.com/ChrisonSimtian/Homelab/tree/main/.containers/unifi)
+test controller (never the live network). **Next:** the legacy write adapter
+(firewall rules / port profiles) once verified against the container.

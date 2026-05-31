@@ -1,6 +1,7 @@
 <Solution>
   <Folder Name="/src/">
     <Project Path="src/UnifiSharp.Api/UnifiSharp.Api.csproj" />
+    <Project Path="src/UnifiSharp.Cli/UnifiSharp.Cli.csproj" />
     <Project Path="src/UnifiSharp/UnifiSharp.csproj" />
   </Folder>
   <Folder Name="/tests/">

@@ -21,4 +21,23 @@ public sealed record UnifiClientOptions
     /// self-signed cert on the LAN, so this can be turned off — defaults to on.
     /// </summary>
     public bool VerifyTls { get; init; } = true;
+
+    /// <summary>
+    /// Build options from <c>UNIFI_BASE_URL</c> / <c>UNIFI_API_KEY</c> /
+    /// <c>UNIFI_VERIFY_TLS</c> environment variables; null if base URL or key is missing.
+    /// </summary>
+    public static UnifiClientOptions? TryFromEnvironment()
+    {
+        var baseUrl = Environment.GetEnvironmentVariable("UNIFI_BASE_URL");
+        var apiKey = Environment.GetEnvironmentVariable("UNIFI_API_KEY");
+        if (string.IsNullOrEmpty(baseUrl) || string.IsNullOrEmpty(apiKey))
+        {
+            return null;
+        }
+
+        var verifyTls = !string.Equals(
+            Environment.GetEnvironmentVariable("UNIFI_VERIFY_TLS"), "false", StringComparison.OrdinalIgnoreCase);
+
+        return new UnifiClientOptions { BaseUrl = new Uri(baseUrl), ApiKey = apiKey, VerifyTls = verifyTls };
+    }
 }
