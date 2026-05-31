@@ -1,0 +1,50 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <!-- Version tracks the UniFi Network API release the spec came from (not SemVer). -->
+    <VersionPrefix>10.4.57</VersionPrefix>
+    <Description>Generated UniFi Network API client (Kiota). Version tracks the UniFi API release.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Kiota.Bundle" Version="2.0.0" />
+  </ItemGroup>
+
+  <!-- Generated sources are produced at build (gitignored); added to compile below. -->
+  <ItemGroup>
+    <Compile Remove="Generated/**/*.cs" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <RepoRoot>$(MSBuildProjectDirectory)/../..</RepoRoot>
+    <OpenApiFile>$(MSBuildProjectDirectory)/schema/openapi.10.4.57.json</OpenApiFile>
+    <GeneratedDir>$(MSBuildProjectDirectory)/Generated</GeneratedDir>
+    <GenStamp>$(MSBuildProjectDirectory)/obj/unifi-gen.stamp</GenStamp>
+  </PropertyGroup>
+
+  <!-- Regenerate the client from the committed OpenAPI. The UniFi spec is already
+       OpenAPI 3.1 (from the console / beezly mirror), so unlike ProxmoxSharp there
+       is no apidoc->OpenAPI converter — Kiota consumes it directly. Incremental:
+       only re-runs when the spec or this csproj changes. -->
+  <Target Name="GenerateUnifiClient"
+          Inputs="$(OpenApiFile);$(MSBuildProjectFullPath)"
+          Outputs="$(GenStamp)">
+    <Message Importance="high" Text="UnifiSharp.Api: regenerating client from $(OpenApiFile)" />
+    <MakeDir Directories="$(MSBuildProjectDirectory)/obj" />
+    <Exec WorkingDirectory="$(RepoRoot)" Command="dotnet tool restore" />
+    <!-- Kiota writes OpenAPI spec-hygiene warnings (the beezly spec has component
+         keys with spaces, no license name) to stderr but still generates (exit 0).
+         IgnoreStandardErrorWarningFormat stops MSBuild treating those as errors. -->
+    <Exec WorkingDirectory="$(RepoRoot)" IgnoreStandardErrorWarningFormat="true"
+          Command="dotnet kiota generate -l CSharp -d &quot;$(OpenApiFile)&quot; -c UnifiApiClient -n UnifiSharp.Api -o &quot;$(GeneratedDir)&quot; --clean-output" />
+    <Touch Files="$(GenStamp)" AlwaysCreate="true" />
+  </Target>
+
+  <Target Name="IncludeGeneratedSources" DependsOnTargets="GenerateUnifiClient" BeforeTargets="CoreCompile">
+    <ItemGroup>
+      <Compile Include="$(GeneratedDir)/**/*.cs" />
+    </ItemGroup>
+  </Target>
+
+</Project>
