@@ -46,4 +46,12 @@ public sealed record UnifiClientOptions
 
         return new UnifiClientOptions { BaseUrl = new Uri(baseUrl), ApiKey = apiKey, VerifyTls = verifyTls };
     }
+
+    /// <summary>
+    /// Redacted representation. The synthesized record <c>ToString()</c> would
+    /// otherwise print <see cref="ApiKey"/>, leaking it into any log or
+    /// interpolated string. The key is never emitted.
+    /// </summary>
+    public override string ToString() =>
+        $"UnifiClientOptions {{ BaseUrl = {BaseUrl}, ApiKey = ***, VerifyTls = {VerifyTls} }}";
 }
