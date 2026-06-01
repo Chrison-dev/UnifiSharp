@@ -30,4 +30,19 @@ public class UnifiClientOptionsTests
 
         Assert.NotNull(client);
     }
+
+    [Fact]
+    public void ToString_does_not_leak_the_api_key()
+    {
+        var options = new UnifiClientOptions
+        {
+            BaseUrl = new Uri("https://192.168.1.1/proxy/network/integration/v1"),
+            ApiKey = "super-secret-api-key",
+        };
+
+        var text = options.ToString();
+
+        Assert.DoesNotContain("super-secret-api-key", text);
+        Assert.Contains("***", text);
+    }
 }
