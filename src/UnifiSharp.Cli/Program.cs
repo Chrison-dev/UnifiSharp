@@ -3,7 +3,7 @@ using UnifiSharp;
 
 // unifisharp — a thin read-only CLI over the UnifiSharp library.
 //
-// Commands: sites | discover
+// Commands: sites | discover | devices | clients | networks | firewall | wlans
 // Config (env): UNIFI_BASE_URL (…/proxy/network/integration/v1), UNIFI_API_KEY,
 //               UNIFI_VERIFY_TLS (optional, 'false' for self-signed consoles)
 
@@ -17,7 +17,12 @@ if (command is "help" or "-h" or "--help")
 
         Usage: unifisharp <command>
           sites      List sites (id + name)
-          discover   Dump a UnifiSnapshot (sites + device/client/network counts) as JSON
+          discover   Dump a UnifiSnapshot (sites + networks/WLANs/firewall/devices/clients) as JSON
+          devices    List adopted devices per site (name, model, ip, mac, firmware, state) as JSON
+          clients    List connected clients per site (name, type, ip, connectedAt) as JSON
+          networks   List networks/VLANs per site (name, vlan id, purpose, enabled) as JSON
+          firewall   List firewall zones, policies, and ACL rules per site as JSON
+          wlans      List WLANs/SSIDs per site (ssid, enabled, security) as JSON
 
         Config (env): UNIFI_BASE_URL (…/proxy/network/integration/v1), UNIFI_API_KEY,
                       UNIFI_VERIFY_TLS (optional, 'false' for self-signed)
@@ -34,6 +39,14 @@ if (options is null)
 
 var client = UnifiApi.Create(options);
 
+var json = new JsonSerializerOptions
+{
+    WriteIndented = true,
+    PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+};
+
+void Dump(object value) => Console.WriteLine(JsonSerializer.Serialize(value, json));
+
 switch (command)
 {
     case "sites":
@@ -45,15 +58,35 @@ switch (command)
         return 0;
 
     case "discover":
-        var snapshot = await new UnifiDiscovery(client).DiscoverAsync();
-        Console.WriteLine(JsonSerializer.Serialize(snapshot, new JsonSerializerOptions
-        {
-            WriteIndented = true,
-            PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-        }));
+        Dump(await new UnifiDiscovery(client).DiscoverAsync());
+        return 0;
+
+    case "devices":
+        Dump((await new UnifiDiscovery(client).DiscoverAsync())
+            .Sites.Select(s => new { s.Site, s.Id, s.Devices }));
+        return 0;
+
+    case "clients":
+        Dump((await new UnifiDiscovery(client).DiscoverAsync())
+            .Sites.Select(s => new { s.Site, s.Id, s.Clients }));
+        return 0;
+
+    case "networks":
+        Dump((await new UnifiDiscovery(client).DiscoverAsync())
+            .Sites.Select(s => new { s.Site, s.Id, s.Networks }));
+        return 0;
+
+    case "firewall":
+        Dump((await new UnifiDiscovery(client).DiscoverAsync())
+            .Sites.Select(s => new { s.Site, s.Id, s.Firewall }));
+        return 0;
+
+    case "wlans":
+        Dump((await new UnifiDiscovery(client).DiscoverAsync())
+            .Sites.Select(s => new { s.Site, s.Id, s.Wlans }));
         return 0;
 
     default:
-        Console.Error.WriteLine($"Unknown command '{command}'. Try: sites | discover");
+        Console.Error.WriteLine($"Unknown command '{command}'. Try: sites | discover | devices | clients | networks | firewall | wlans");
         return 1;
 }

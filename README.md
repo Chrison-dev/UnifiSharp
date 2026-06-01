@@ -81,7 +81,12 @@ A `dotnet` global tool over the library:
 export UNIFI_BASE_URL="https://localhost:8443/proxy/network/integration/v1"
 export UNIFI_API_KEY="…"  UNIFI_VERIFY_TLS=false
 unifisharp sites       # list sites
-unifisharp discover    # JSON snapshot: sites + device/client/network counts
+unifisharp discover    # JSON snapshot: sites + networks/WLANs/firewall/devices/clients
+unifisharp networks    # networks/VLANs per site (name, vlan id, purpose, enabled)
+unifisharp wlans       # WLANs/SSIDs per site (ssid, enabled, security)
+unifisharp firewall    # firewall zones, policies, and ACL rules per site
+unifisharp devices     # adopted devices per site (name, model, ip, mac, firmware, state)
+unifisharp clients     # connected clients per site (name, type, ip, connectedAt)
 ```
 
 ## Status
