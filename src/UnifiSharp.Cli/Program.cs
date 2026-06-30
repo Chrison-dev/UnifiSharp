@@ -24,10 +24,26 @@ if (command is "help" or "-h" or "--help")
           firewall   List firewall zones, policies, and ACL rules per site as JSON
           wlans      List WLANs/SSIDs per site (ssid, enabled, security) as JSON
 
+          legacy <list|create|delete> <resource> [id] [--json '<body>']
+                     Legacy controller write API (port-forwards, firewall, VLANs).
+                     resource: portforward | firewallgroup | networkconf
+                     e.g. unifisharp legacy create portforward --json '{"name":"x","enabled":true,
+                          "pfwd_interface":"wan","src":"any","dst_port":"443","fwd":"10.10.0.13",
+                          "fwd_port":"443","proto":"tcp"}'
+
         Config (env): UNIFI_BASE_URL (…/proxy/network/integration/v1), UNIFI_API_KEY,
                       UNIFI_VERIFY_TLS (optional, 'false' for self-signed)
+        Legacy config (env): UNIFI_LEGACY_BASE_URL (…/proxy/network/api/s/default),
+                      UNIFI_USERNAME, UNIFI_PASSWORD, UNIFI_VERIFY_TLS
         """);
     return 0;
+}
+
+// The legacy write commands authenticate by session (user/pass), not X-API-KEY,
+// and dispatch before the integration-client setup below.
+if (command == "legacy")
+{
+    return await LegacyCli.RunAsync(args[1..]);
 }
 
 var options = UnifiClientOptions.TryFromEnvironment();
