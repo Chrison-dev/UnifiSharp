@@ -2,6 +2,13 @@
   "version": 1,
   "isRoot": true,
   "tools": {
+    "microsoft.openapi.kiota": {
+      "version": "1.31.1",
+      "commands": [
+        "kiota"
+      ],
+      "rollForward": false
+    },
     "husky": {
       "version": "0.9.1",
       "commands": [
