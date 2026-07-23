@@ -7,7 +7,12 @@
     <!-- Independent SemVer for the hand-written surface; decoupled from the
          UniFi API version (UnifiSharp.Api). -->
     <VersionPrefix>0.1.0</VersionPrefix>
-    <Description>C# client for UniFi Network — hand-written runtime over the generated UnifiSharp.Api.</Description>
+    <!-- Public nuget.org ID uses the reserved Chrison.* prefix (the bare
+         'UnifiSharp' ID is taken on nuget.org by an unrelated project).
+         AssemblyName/RootNamespace stay 'UnifiSharp' (project name) so consumer
+         code — `using UnifiSharp;` — is unchanged. -->
+    <PackageId>Chrison.UnifiSharp</PackageId>
+    <Description>C# client for UniFi Network — hand-written runtime over the generated Chrison.UnifiSharp.Api.</Description>
   </PropertyGroup>
 
   <ItemGroup>

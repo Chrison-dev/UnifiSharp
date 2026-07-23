@@ -4,6 +4,10 @@
     <TargetFramework>net10.0</TargetFramework>
     <!-- Version tracks the UniFi Network API release the spec came from (not SemVer). -->
     <VersionPrefix>10.4.57</VersionPrefix>
+    <!-- Public nuget.org ID uses the reserved Chrison.* prefix. AssemblyName/
+         RootNamespace stay 'UnifiSharp.Api' (project name) — consumer code and the
+         generated `namespace UnifiSharp.Api` are unchanged. -->
+    <PackageId>Chrison.UnifiSharp.Api</PackageId>
     <Description>Generated UniFi Network API client (Kiota). Version tracks the UniFi API release.</Description>
   </PropertyGroup>
 
