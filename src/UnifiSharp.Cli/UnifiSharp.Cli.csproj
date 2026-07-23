@@ -6,9 +6,11 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
 
+    <!-- Public nuget.org ID uses the reserved Chrison.* prefix; the invoked command
+         (ToolCommandName) stays `unifisharp`, so usage is unchanged. -->
     <PackAsTool>true</PackAsTool>
     <ToolCommandName>unifisharp</ToolCommandName>
-    <PackageId>UnifiSharp.Cli</PackageId>
+    <PackageId>Chrison.UnifiSharp.Cli</PackageId>
     <VersionPrefix>0.1.0</VersionPrefix>
     <Description>CLI for UnifiSharp — read and discover UniFi Network from the shell.</Description>
   </PropertyGroup>

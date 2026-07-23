@@ -34,11 +34,17 @@ on build** (only when the spec changes) and **not committed**.
 
 ## Build
 
+Built with [Fallout](https://github.com/Fallout-build/Fallout) (Chris's C#/.NET
+build system, a NUKE successor). Targets: `Compile` → `Test` → `Pack` → `Publish`.
+
 ```bash
-dotnet tool restore     # restore Kiota (the build invokes it to regenerate)
-dotnet build            # regenerates UnifiSharp.Api from the spec if it changed, then compiles
-dotnet test
+./build.sh              # default: Test (Compile regenerates UnifiSharp.Api from the spec, then compiles)
+./build.sh Pack         # produce the Chrison.* nupkgs into artifacts/
 ```
+
+Requires the .NET 10 SDK (see `global.json`) and `GITHUB_PACKAGES_PAT` in the
+environment (a PAT with `read:packages` on the Fallout-build org — the build restores
+`Fallout.*` from that feed, see `nuget.config`). CI runs `./build.sh Test` on push/PR.
 
 ## Use it
 
@@ -62,9 +68,12 @@ var client = UnifiApi.Create(new UnifiClientOptions
 
 ## Packages
 
-Published to GitHub Packages like ProxmoxSharp: prerelease on push to `main`
-(`…-preview.N`), stable on a `v*` tag. `UnifiSharp.Api` tracks the UniFi API
-release; `UnifiSharp` its own SemVer.
+Published to **nuget.org** (public) under the `Chrison.*` prefix, via **Trusted
+Publishing** (OIDC — no stored API key): `Chrison.UnifiSharp`, `Chrison.UnifiSharp.Api`,
+`Chrison.UnifiSharp.Cli`. Prerelease on push to `main` (`…-preview.N`), stable on a
+`v*` tag. `.Api` tracks the UniFi API release; the library its own SemVer. IDs use the
+`Chrison.*` prefix because the bare `UnifiSharp` ID is taken on nuget.org by an unrelated
+project; assembly names and namespaces stay `UnifiSharp`, so `using UnifiSharp;` is unchanged.
 
 ## Refresh the spec (new UniFi release)
 
