@@ -10,7 +10,7 @@
     <RepositoryUrl>https://github.com/Chrison-dev/UnifiSharp</RepositoryUrl>
     <PackageProjectUrl>https://github.com/Chrison-dev/UnifiSharp</PackageProjectUrl>
     <RepositoryType>git</RepositoryType>
-    <PackageLicenseExpression>Unlicense</PackageLicenseExpression>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <PublishRepositoryUrl>true</PublishRepositoryUrl>
     <!-- Embed symbols in the assembly (GitHub Packages doesn't take .snupkg). -->
     <DebugType>embedded</DebugType>
