@@ -1,18 +1,31 @@
 # UnifiSharp
 
+[![NuGet](https://img.shields.io/nuget/v/Chrison.UnifiSharp.svg)](https://www.nuget.org/packages/Chrison.UnifiSharp/)
+[![Downloads](https://img.shields.io/nuget/dt/Chrison.UnifiSharp.svg)](https://www.nuget.org/packages/Chrison.UnifiSharp/)
+[![ci](https://github.com/Chrison-dev/UnifiSharp/actions/workflows/ci.yml/badge.svg)](https://github.com/Chrison-dev/UnifiSharp/actions/workflows/ci.yml)
+[![Built with Fallout](https://img.shields.io/badge/built%20with-Fallout-8A2BE2)](https://github.com/Fallout-build/Fallout)
+[![License: MIT](https://img.shields.io/github/license/Chrison-dev/UnifiSharp.svg)](LICENSE)
+
 A C# client for the **UniFi Network API** — **mostly code-generated** from
 Ubiquiti's official OpenAPI spec, with a thin hand-written runtime for auth and
 transport. Sibling to [ProxmoxSharp](https://github.com/Chrison-dev/ProxmoxSharp);
 built to bring the UniFi-managed network under the homelab's C#-native IaC. See
-[ADR-0003](https://github.com/Chrison-dev/Homelab/blob/main/docs/adr/ADR-0003-unifisharp.md).
+[ADR-0003](https://github.com/Chrison-Homelab/Homelab/blob/main/docs/adr/ADR-0003-unifisharp.md).
+
+```sh
+dotnet add package Chrison.UnifiSharp
+```
 
 ## Approach
 
-```
-UniFi Network OpenAPI spec (console Settings → Integrations / beezly mirror)
-   │  Kiota (pinned dotnet tool)   → generated C# client  (UnifiSharp.Api)
-   ▼
-UnifiSharp                         = hand-written runtime over it (X-API-KEY auth)
+```mermaid
+flowchart LR
+  SPEC["📜 UniFi OpenAPI 3.1<br/>(console / beezly mirror)"] --> KIOTA["⚙️ Kiota (pinned tool)<br/>generate C# client"]
+  KIOTA --> API["📦 UnifiSharp.Api<br/>generated · tracks UniFi release"]
+  API --> RT["✍️ UnifiSharp<br/>hand-written runtime (X-API-KEY)"]
+  RT --> LEG["🧩 UnifiSharp.Legacy<br/>session-auth write adapter<br/>(port-forwards · firewall · networks)"]
+  classDef gen fill:#e0e7ff,stroke:#4f46e5;
+  class API gen;
 ```
 
 The UniFi spec is already OpenAPI 3.1, so — unlike ProxmoxSharp — there's **no
