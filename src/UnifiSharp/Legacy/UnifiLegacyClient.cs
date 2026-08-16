@@ -43,6 +43,13 @@ public sealed class UnifiLegacyClient : IDisposable
     public Task<UnifiPortForward> CreatePortForwardAsync(UnifiPortForward spec, CancellationToken ct = default)
         => CreateAsync("portforward", spec, ct);
 
+    /// <summary>
+    /// Partial-update a port-forward. Only non-null properties are sent, so a caller
+    /// can correct one drifted field without restating the rule.
+    /// </summary>
+    public Task<UnifiPortForward> UpdatePortForwardAsync(string id, UnifiPortForward spec, CancellationToken ct = default)
+        => UpdateAsync("portforward", id, spec, ct);
+
     public Task DeletePortForwardAsync(string id, CancellationToken ct = default)
         => DeleteAsync("portforward", id, ct);
 
