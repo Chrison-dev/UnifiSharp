@@ -6,7 +6,7 @@
     <Nullable>enable</Nullable>
     <!-- Independent SemVer for the hand-written surface; decoupled from the
          UniFi API version (UnifiSharp.Api). -->
-    <VersionPrefix>0.2.0</VersionPrefix>
+    <VersionPrefix>0.3.0</VersionPrefix>
     <!-- Public nuget.org ID uses the reserved Chrison.* prefix (the bare
          'UnifiSharp' ID is taken on nuget.org by an unrelated project).
          AssemblyName/RootNamespace stay 'UnifiSharp' (project name) so consumer

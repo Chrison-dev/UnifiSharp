@@ -96,6 +96,73 @@ public sealed class UnifiLegacyClient : IDisposable
     public Task<UnifiUser> CreateUserAsync(UnifiUser spec, CancellationToken ct = default)
         => CreateAsync("user", spec, ct);
 
+    // ── Static DNS (v2 site API: static-dns) ──────────────────────────────────
+    // A DIFFERENT surface from everything above: bare JSON arrays instead of the
+    // {meta,data} envelope, and updates are full replacements — a PUT carrying only the
+    // changed field returns 400 Validation failed, where rest/user accepts exactly that.
+    // Hence UnifiStaticDnsRecord is non-nullable throughout and Update takes a whole record.
+
+    public async Task<IReadOnlyList<UnifiStaticDnsRecord>> ListStaticDnsAsync(CancellationToken ct = default)
+    {
+        using var resp = await _session.SendAbsoluteAsync(HttpMethod.Get, StaticDnsUrl(), null, ct).ConfigureAwait(false);
+        return await ReadV2Async<IReadOnlyList<UnifiStaticDnsRecord>>(resp, "static-dns", ct).ConfigureAwait(false) ?? [];
+    }
+
+    public async Task<UnifiStaticDnsRecord> CreateStaticDnsAsync(UnifiStaticDnsRecord spec, CancellationToken ct = default)
+    {
+        var body = UnifiLegacySession.JsonBody(JsonSerializer.Serialize(spec with { Id = null }, SerializerOptions));
+        using var resp = await _session.SendAbsoluteAsync(HttpMethod.Post, StaticDnsUrl(), body, ct).ConfigureAwait(false);
+        return await ReadV2Async<UnifiStaticDnsRecord>(resp, "static-dns", ct).ConfigureAwait(false)
+               ?? throw new UnifiLegacyException("create static-dns: ok but no object returned");
+    }
+
+    /// <summary>Replace a record wholesale. Pass the full desired state — partials are rejected.</summary>
+    public async Task<UnifiStaticDnsRecord> UpdateStaticDnsAsync(string id, UnifiStaticDnsRecord spec, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(id);
+        var body = UnifiLegacySession.JsonBody(JsonSerializer.Serialize(spec with { Id = id }, SerializerOptions));
+        using var resp = await _session.SendAbsoluteAsync(HttpMethod.Put, StaticDnsUrl(id), body, ct).ConfigureAwait(false);
+        return await ReadV2Async<UnifiStaticDnsRecord>(resp, "static-dns", ct).ConfigureAwait(false) ?? spec;
+    }
+
+    public async Task DeleteStaticDnsAsync(string id, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(id);
+        using var resp = await _session.SendAbsoluteAsync(HttpMethod.Delete, StaticDnsUrl(id), null, ct).ConfigureAwait(false);
+        await ReadV2Async<JsonElement?>(resp, "static-dns", ct).ConfigureAwait(false);   // throws on failure
+    }
+
+    private Uri StaticDnsUrl(string? id = null)
+    {
+        var b = _session.Options.SiteV2Url.AbsoluteUri.TrimEnd('/');
+        return new Uri(id is null ? $"{b}/static-dns" : $"{b}/static-dns/{id}");
+    }
+
+    // v2 has no envelope, so success is the status code and the body is the payload
+    // (empty on DELETE). Surface the server's message on failure rather than a bare code.
+    private static async Task<T?> ReadV2Async<T>(HttpResponseMessage resp, string resource, CancellationToken ct)
+    {
+        var body = await resp.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+        if (!resp.IsSuccessStatusCode)
+        {
+            throw new UnifiLegacyException($"{resource}: HTTP {(int)resp.StatusCode} — {Truncate(body)}");
+        }
+
+        if (string.IsNullOrWhiteSpace(body))
+        {
+            return default;
+        }
+
+        try
+        {
+            return JsonSerializer.Deserialize<T>(body, SerializerOptions);
+        }
+        catch (JsonException ex)
+        {
+            throw new UnifiLegacyException($"{resource}: unparseable response — {ex.Message}: {Truncate(body)}");
+        }
+    }
+
     // ── Generic REST verbs over the {meta,data} envelope ──────────────────────
 
     private async Task<IReadOnlyList<T>> ListAsync<T>(string resource, CancellationToken ct)

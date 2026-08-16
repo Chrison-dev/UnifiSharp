@@ -137,6 +137,35 @@ public sealed record UnifiUser
 }
 
 /// <summary>
+/// A controller-local DNS record (<b>v2</b> site API, <c>static-dns</c>) — how a name
+/// resolves on the LAN without any public zone being involved.
+/// <para><b>The v2 surface does not behave like the legacy one.</b> It returns a bare JSON
+/// array rather than a <c>{meta,data}</c> envelope, and an update is a FULL REPLACEMENT —
+/// a PUT carrying only the changed field is rejected with
+/// <c>400 Validation failed</c>, where the legacy <c>rest/user</c> path accepts exactly
+/// that. So every property here is non-nullable with a sane default: a partial is not a
+/// thing you can send, and the type should not imply otherwise.</para>
+/// <para>Wildcards are supported and work for arbitrary labels — <c>*.lab.chrison.dev</c>
+/// resolves <c>anything.lab.chrison.dev</c>.</para>
+/// </summary>
+public sealed record UnifiStaticDnsRecord
+{
+    [JsonPropertyName("_id")] public string? Id { get; init; }
+    /// <summary>The name, e.g. <c>pulse.lab.chrison.dev</c> or <c>*.lab.chrison.dev</c>.</summary>
+    [JsonPropertyName("key")] public string Key { get; init; } = "";
+    /// <summary><c>A</c>, <c>AAAA</c>, <c>CNAME</c>, <c>TXT</c>, <c>MX</c>, <c>SRV</c>.</summary>
+    [JsonPropertyName("record_type")] public string RecordType { get; init; } = "A";
+    /// <summary>The answer — an address for A/AAAA, a target for CNAME.</summary>
+    [JsonPropertyName("value")] public string Value { get; init; } = "";
+    [JsonPropertyName("enabled")] public bool Enabled { get; init; } = true;
+    [JsonPropertyName("ttl")] public int Ttl { get; init; } = 300;
+    /// <summary>SRV only; the controller stores 0 for every other type.</summary>
+    [JsonPropertyName("port")] public int Port { get; init; }
+    [JsonPropertyName("priority")] public int Priority { get; init; }
+    [JsonPropertyName("weight")] public int Weight { get; init; }
+}
+
+/// <summary>
 /// A network / VLAN (<c>rest/networkconf</c>). Only the commonly-managed fields
 /// are typed; the server fills the rest with defaults on create.
 /// </summary>

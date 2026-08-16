@@ -57,6 +57,28 @@ public sealed record UnifiLegacyOptions
         new($"https://{host}/proxy/network/api/s/{site}");
 
     /// <summary>
+    /// The site name parsed out of <see cref="BaseUrl"/> — the last path segment of
+    /// <c>…/api/s/&lt;site&gt;</c>. Falls back to <c>default</c>.
+    /// </summary>
+    public string Site
+    {
+        get
+        {
+            var seg = BaseUrl.Segments.LastOrDefault()?.Trim('/');
+            return string.IsNullOrEmpty(seg) ? "default" : seg;
+        }
+    }
+
+    /// <summary>
+    /// Base URL of the controller's <b>v2 site API</b>
+    /// (<c>…/proxy/network/v2/api/site/&lt;site&gt;</c>) — a different surface from the
+    /// legacy <c>/api/s/&lt;site&gt;</c> one, with different conventions: it returns bare
+    /// JSON arrays rather than the <c>{meta,data}</c> envelope, and its updates are full
+    /// replacements rather than partials. Static DNS lives here.
+    /// </summary>
+    public Uri SiteV2Url => new(ControllerRoot, $"/proxy/network/v2/api/site/{Site}");
+
+    /// <summary>
     /// Throw unless one auth mode is fully configured. The session calls this on
     /// construction so a half-configured options object fails loudly and early
     /// rather than as an opaque 401 on the first request.

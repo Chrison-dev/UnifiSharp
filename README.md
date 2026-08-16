@@ -23,7 +23,7 @@ flowchart LR
   SPEC["📜 UniFi OpenAPI 3.1<br/>(console / beezly mirror)"] --> KIOTA["⚙️ Kiota (pinned tool)<br/>generate C# client"]
   KIOTA --> API["📦 UnifiSharp.Api<br/>generated · tracks UniFi release"]
   API --> RT["✍️ UnifiSharp<br/>hand-written runtime (X-API-KEY)"]
-  RT --> LEG["🧩 UnifiSharp.Legacy<br/>write adapter · API-key or session<br/>(port-forwards · firewall · networks · clients)"]
+  RT --> LEG["🧩 UnifiSharp.Legacy<br/>write adapter · API-key or session<br/>(port-forwards · firewall · networks<br/>clients · static DNS)"]
   classDef gen fill:#e0e7ff,stroke:#4f46e5;
   class API gen;
 ```
@@ -127,6 +127,22 @@ With `UNIFI_LOCAL_HOST` alone the site URL is derived as
 > port-forward, a firewall group and a VLAN) are gated on *session* auth on purpose,
 > so a shell holding only an API key can never point them at a production gateway.
 > Read-only live checks (`UnifiLegacyReadOnlyLiveTests`) run in either mode.
+
+### Two surfaces, two sets of rules
+
+The adapter spans the legacy site API **and** the v2 site API, and they do not behave
+alike. Assuming otherwise fails only at runtime, against a real controller:
+
+| | legacy `…/api/s/<site>` | v2 `…/v2/api/site/<site>` |
+|---|---|---|
+| response | `{ "meta": {...}, "data": [...] }` | bare JSON array / object |
+| update | **partial** — send only changed fields | **full replacement** — a partial PUT is `400 Validation failed` |
+| covers | port-forwards, firewall groups, networks, clients | static DNS |
+
+That is why `UnifiStaticDnsRecord` is non-nullable throughout while the legacy DTOs are
+nullable: on v2 a partial is not something you can send, so the type should not suggest it.
+Static-DNS **wildcards are supported** and match arbitrary labels
+(`*.lab.example.com` answers `anything.lab.example.com`).
 
 ## Status
 
