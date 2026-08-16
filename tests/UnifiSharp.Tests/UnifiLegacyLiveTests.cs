@@ -4,9 +4,16 @@ using Xunit;
 namespace UnifiSharp.Tests;
 
 // Live write round-trips against a UniFi controller — the .containers/unifi test
-// container (run ./bootstrap.sh, then `set -a && . ./credentials.env`). Runs only
-// when UNIFI_LEGACY_BASE_URL / UNIFI_USERNAME / UNIFI_PASSWORD are set. Every test
+// container (run ./bootstrap.sh, then `set -a && . ./credentials.env`). Every test
 // cleans up what it creates (add-only on the controller).
+//
+// ⚠ These tests CREATE AND DELETE real objects — port-forwards, firewall groups and
+// a VLAN. They are gated on SESSION auth (UNIFI_USERNAME + UNIFI_PASSWORD) on purpose,
+// which is the only mode the test container offers. That gate is load-bearing: once
+// UnifiLegacyOptions learned API-key auth, a plain `secrets.env` (UNIFI_API_KEY +
+// UNIFI_LOCAL_HOST) started satisfying TryFromEnvironment — so keying these off
+// TryFromEnvironment alone would silently point them at the live home gateway and
+// create a VLAN on it. Read-only live checks use LegacyReadOnlyFixture instead.
 //
 // One shared session for the whole class (IClassFixture): the controller
 // rate-limits logins (HTTP 429), so we log in once and reuse the cookie.
@@ -15,9 +22,56 @@ namespace UnifiSharp.Tests;
 public sealed class LegacyContainerFixture : IDisposable
 {
     public UnifiLegacyClient? Client { get; } =
-        UnifiLegacyOptions.TryFromEnvironment() is { } o ? new UnifiLegacyClient(o) : null;
+        UnifiLegacyOptions.TryFromEnvironment() is { UsesApiKey: false } o ? new UnifiLegacyClient(o) : null;
 
     public void Dispose() => Client?.Dispose();
+}
+
+/// <summary>
+/// Any configured controller, in either auth mode — for checks that only READ.
+/// Safe to point at a real gateway.
+/// </summary>
+public sealed class LegacyReadOnlyFixture : IDisposable
+{
+    public UnifiLegacyClient? Client { get; } =
+        UnifiLegacyOptions.TryFromEnvironment() is { } o ? new UnifiLegacyClient(o) : null;
+
+    public bool UsesApiKey { get; } = UnifiLegacyOptions.TryFromEnvironment()?.UsesApiKey ?? false;
+
+    public void Dispose() => Client?.Dispose();
+}
+
+/// <summary>Read-only live checks — no object is created, modified or deleted.</summary>
+public class UnifiLegacyReadOnlyLiveTests : IClassFixture<LegacyReadOnlyFixture>
+{
+    private readonly LegacyReadOnlyFixture _fixture;
+    public UnifiLegacyReadOnlyLiveTests(LegacyReadOnlyFixture fixture) => _fixture = fixture;
+
+    [SkippableFact]
+    public async Task ApiKey_auth_can_read_networks_without_a_session_login()
+    {
+        Skip.If(_fixture.Client is null, "No UniFi env — skipping live read test.");
+        Skip.IfNot(_fixture.UsesApiKey, "Not in API-key mode — this test covers the X-API-KEY path.");
+
+        var networks = await _fixture.Client!.ListNetworksAsync();
+
+        // Proves the whole X-API-KEY path: no /api/auth/login, no cookie, no CSRF token.
+        Assert.NotEmpty(networks);
+        Assert.Contains(networks, n => !string.IsNullOrEmpty(n.Id));
+    }
+
+    [SkippableFact]
+    public async Task ApiKey_auth_can_read_known_clients_and_their_reservations()
+    {
+        Skip.If(_fixture.Client is null, "No UniFi env — skipping live read test.");
+        Skip.IfNot(_fixture.UsesApiKey, "Not in API-key mode — this test covers the X-API-KEY path.");
+
+        var users = await _fixture.Client!.ListUsersAsync();
+
+        Assert.NotEmpty(users);
+        Assert.All(users.Where(u => u.UseFixedIp == true),
+            u => Assert.False(string.IsNullOrEmpty(u.FixedIp)));  // a reservation always carries an address
+    }
 }
 
 public class UnifiLegacyLiveTests : IClassFixture<LegacyContainerFixture>

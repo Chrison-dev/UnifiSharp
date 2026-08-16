@@ -114,4 +114,123 @@ public class UnifiLegacyClientTests
         Assert.Contains("\"ip_subnet\":\"10.10.0.1/24\"", json);
         Assert.DoesNotContain("dhcpd_enabled", json); // unset → omitted
     }
+
+    [Fact]
+    public void Network_vlan_reads_from_a_number_or_a_string()
+    {
+        // A real UniFi OS gateway sends a number; the test container sends a string.
+        // Both must land in the same place, or ListNetworksAsync throws on real hardware
+        // while every container test stays green.
+        var fromNumber = JsonSerializer.Deserialize<UnifiNetwork>("""{"name":"Homelab","vlan":1010}""", Json);
+        var fromString = JsonSerializer.Deserialize<UnifiNetwork>("""{"name":"Homelab","vlan":"1010"}""", Json);
+
+        Assert.Equal("1010", fromNumber!.Vlan);
+        Assert.Equal("1010", fromString!.Vlan);
+        Assert.Null(JsonSerializer.Deserialize<UnifiNetwork>("""{"vlan":null}""", Json)!.Vlan);
+    }
+
+    [Fact]
+    public void Network_vlan_still_serializes_as_a_string()
+    {
+        // Write behaviour is deliberately unchanged — creates have always sent a string.
+        Assert.Contains("\"vlan\":\"3990\"", JsonSerializer.Serialize(new UnifiNetwork { Vlan = "3990" }, Json));
+    }
+
+    // ---- API-key auth mode ----
+
+    private static UnifiLegacyOptions KeyOptions() =>
+        new() { BaseUrl = new Uri("https://gw.lan/proxy/network/api/s/default"), ApiKey = "k" };
+
+    [Fact]
+    public void UsesApiKey_is_true_only_when_a_key_is_set()
+    {
+        Assert.True(KeyOptions().UsesApiKey);
+        Assert.False(Options().UsesApiKey);
+        Assert.False((KeyOptions() with { ApiKey = "" }).UsesApiKey); // empty is not a credential
+    }
+
+    [Fact]
+    public void Validate_accepts_either_mode_and_rejects_neither()
+    {
+        KeyOptions().Validate();
+        Options().Validate();
+
+        // Half a session is not a credential — fail on construction, not as a 401 later.
+        Assert.Throws<UnifiLegacyException>(() => (Options() with { Password = null }).Validate());
+        Assert.Throws<UnifiLegacyException>(() => (Options() with { Username = null }).Validate());
+    }
+
+    [Fact]
+    public void ToString_does_not_leak_the_api_key()
+    {
+        var s = (KeyOptions() with { ApiKey = "super-secret-key" }).ToString();
+        Assert.DoesNotContain("super-secret-key", s);
+        Assert.Contains("ApiKey ***", s);
+    }
+
+    [Fact]
+    public void SiteUrlFor_builds_the_legacy_site_path()
+    {
+        Assert.Equal(
+            new Uri("https://192.168.178.1/proxy/network/api/s/default"),
+            UnifiLegacyOptions.SiteUrlFor("192.168.178.1"));
+    }
+
+    // ---- rest/user — the object a DHCP reservation lives on ----
+
+    [Fact]
+    public void User_reservation_payload_is_a_partial_update()
+    {
+        // The point of the partial: a reservation PUT must not blank the controller's
+        // fingerprinting/history columns just because we didn't set them.
+        var json = JsonSerializer.Serialize(
+            new UnifiUser
+            {
+                UseFixedIp = true,
+                FixedIp = "10.10.135.221",
+                NetworkId = "68e07cc49da6501d8c970f47",
+                LocalDnsRecord = "shell.devops.chrison.internal",
+                LocalDnsRecordEnabled = true,
+            }, Json);
+
+        Assert.Contains("\"use_fixedip\":true", json);
+        Assert.Contains("\"fixed_ip\":\"10.10.135.221\"", json);
+        Assert.Contains("\"network_id\":\"68e07cc49da6501d8c970f47\"", json);
+        Assert.Contains("\"local_dns_record\":\"shell.devops.chrison.internal\"", json);
+        Assert.DoesNotContain("hostname", json);   // untouched → omitted, not nulled
+        Assert.DoesNotContain("last_ip", json);
+        Assert.DoesNotContain("\"_id\"", json);     // quoted: "network_id" legitimately contains _id
+    }
+
+    [Fact]
+    public void User_retire_payload_sends_an_explicit_false()
+    {
+        // Retiring a reservation is use_fixedip:false, NOT deleting the client — an
+        // explicit false must survive the omit-nulls serializer or the PUT is a no-op.
+        var json = JsonSerializer.Serialize(new UnifiUser { UseFixedIp = false }, Json);
+        Assert.Equal("""{"use_fixedip":false}""", json);
+    }
+
+    [Fact]
+    public void User_envelope_deserializes_reservation_fields()
+    {
+        const string body =
+            """
+            { "meta": { "rc": "ok" }, "data": [
+              { "_id": "6a7f", "mac": "bc:24:11:f6:9f:ae", "name": "shell (CT 3003)",
+                "hostname": "shell", "use_fixedip": true, "fixed_ip": "10.10.135.221",
+                "network_id": "68e0", "local_dns_record": "shell.devops.chrison.internal",
+                "local_dns_record_enabled": true, "last_ip": "10.10.135.221" } ] }
+            """;
+
+        var env = JsonSerializer.Deserialize<UnifiLegacyEnvelope<UnifiUser>>(body, Json);
+
+        Assert.NotNull(env);
+        var u = Assert.Single(env!.Data);
+        Assert.Equal("bc:24:11:f6:9f:ae", u.Mac);
+        Assert.Equal("shell (CT 3003)", u.Name);
+        Assert.True(u.UseFixedIp);
+        Assert.Equal("10.10.135.221", u.FixedIp);
+        Assert.Equal("shell.devops.chrison.internal", u.LocalDnsRecord);
+    }
 }

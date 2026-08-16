@@ -23,7 +23,7 @@ flowchart LR
   SPEC["📜 UniFi OpenAPI 3.1<br/>(console / beezly mirror)"] --> KIOTA["⚙️ Kiota (pinned tool)<br/>generate C# client"]
   KIOTA --> API["📦 UnifiSharp.Api<br/>generated · tracks UniFi release"]
   API --> RT["✍️ UnifiSharp<br/>hand-written runtime (X-API-KEY)"]
-  RT --> LEG["🧩 UnifiSharp.Legacy<br/>session-auth write adapter<br/>(port-forwards · firewall · networks)"]
+  RT --> LEG["🧩 UnifiSharp.Legacy<br/>write adapter · API-key or session<br/>(port-forwards · firewall · networks · clients)"]
   classDef gen fill:#e0e7ff,stroke:#4f46e5;
   class API gen;
 ```
@@ -110,6 +110,23 @@ unifisharp firewall    # firewall zones, policies, and ACL rules per site
 unifisharp devices     # adopted devices per site (name, model, ip, mac, firmware, state)
 unifisharp clients     # connected clients per site (name, type, ip, connectedAt)
 ```
+
+## Legacy adapter auth
+
+`UnifiLegacyOptions` takes either credential, and `TryFromEnvironment()` prefers the key:
+
+| Mode | Set | Notes |
+|---|---|---|
+| **API key** | `UNIFI_API_KEY` + (`UNIFI_LEGACY_BASE_URL` or `UNIFI_LOCAL_HOST`) | `X-API-KEY` on every request — no login, cookie or CSRF token. Preferred against a real gateway; the same key the integration API uses. |
+| **Session** | `UNIFI_USERNAME` + `UNIFI_PASSWORD` + base URL | `POST /api/auth/login`. The only mode the `.containers/unifi` test container supports, since it can't mint API keys. |
+
+With `UNIFI_LOCAL_HOST` alone the site URL is derived as
+`https://<host>/proxy/network/api/s/default`.
+
+> The **destructive** live tests (`UnifiLegacyLiveTests` — they create and delete a
+> port-forward, a firewall group and a VLAN) are gated on *session* auth on purpose,
+> so a shell holding only an API key can never point them at a production gateway.
+> Read-only live checks (`UnifiLegacyReadOnlyLiveTests`) run in either mode.
 
 ## Status
 
