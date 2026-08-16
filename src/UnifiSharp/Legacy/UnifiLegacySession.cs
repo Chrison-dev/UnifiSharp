@@ -6,11 +6,15 @@ using System.Text.Json;
 namespace UnifiSharp.Legacy;
 
 /// <summary>
-/// Holds a classic UniFi controller session for the legacy API: logs in via
-/// <c>POST /api/auth/login</c> (capturing the <c>TOKEN</c> cookie + CSRF token)
-/// and sends authenticated requests, attaching the CSRF token to mutating calls
-/// and transparently re-authenticating once on a 401. Disposable — owns its
-/// <see cref="HttpClient"/>.
+/// Authenticates legacy-API requests in whichever mode <see cref="UnifiLegacyOptions"/>
+/// specifies.
+/// <para><b>API-key mode</b> (<see cref="UnifiLegacyOptions.ApiKey"/> set): every request
+/// carries <c>X-API-KEY</c>. There is no login, no cookie and no CSRF token, so a 401 is
+/// a real authorization failure and is surfaced rather than retried.</para>
+/// <para><b>Session mode</b>: logs in via <c>POST /api/auth/login</c> (capturing the
+/// <c>TOKEN</c> cookie + CSRF token), attaches the CSRF token to mutating calls, and
+/// transparently re-authenticates once on a 401.</para>
+/// Disposable — owns its <see cref="HttpClient"/>.
 /// </summary>
 public sealed class UnifiLegacySession : IDisposable
 {
@@ -23,6 +27,7 @@ public sealed class UnifiLegacySession : IDisposable
     public UnifiLegacySession(UnifiLegacyOptions options)
     {
         ArgumentNullException.ThrowIfNull(options);
+        options.Validate();
         _options = options;
         _loginUrl = new Uri(_options.ControllerRoot, "/api/auth/login");
 
@@ -36,9 +41,18 @@ public sealed class UnifiLegacySession : IDisposable
         _http = new HttpClient(handler);
     }
 
-    /// <summary>Ensure a valid session, logging in if needed.</summary>
+    /// <summary>
+    /// Ensure a valid session, logging in if needed. A no-op in API-key mode — there
+    /// is no session to establish.
+    /// </summary>
     public async Task LoginAsync(CancellationToken ct = default)
     {
+        if (_options.UsesApiKey)
+        {
+            _loggedIn = true;
+            return;
+        }
+
         using var req = new HttpRequestMessage(HttpMethod.Post, _loginUrl)
         {
             Content = JsonContent.Create(new { username = _options.Username, password = _options.Password }),
@@ -68,9 +82,12 @@ public sealed class UnifiLegacySession : IDisposable
         }
 
         var resp = await SendOnceAsync(method, relativePath, content, ct).ConfigureAwait(false);
-        if (resp.StatusCode == HttpStatusCode.Unauthorized)
+
+        // Re-auth-and-retry only makes sense for a session that can expire. In API-key
+        // mode a 401 means the key is wrong or unprivileged, and retrying would just
+        // repeat it — let the caller see the failure.
+        if (resp.StatusCode == HttpStatusCode.Unauthorized && !_options.UsesApiKey)
         {
-            // Session expired — re-auth once and retry.
             resp.Dispose();
             await LoginAsync(ct).ConfigureAwait(false);
             resp = await SendOnceAsync(method, relativePath, content, ct).ConfigureAwait(false);
@@ -91,7 +108,11 @@ public sealed class UnifiLegacySession : IDisposable
             req.Content = content;
         }
 
-        if (_csrfToken is not null)
+        if (_options.UsesApiKey)
+        {
+            req.Headers.TryAddWithoutValidation("X-API-KEY", _options.ApiKey);
+        }
+        else if (_csrfToken is not null)
         {
             req.Headers.TryAddWithoutValidation("X-CSRF-Token", _csrfToken);
         }

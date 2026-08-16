@@ -66,6 +66,29 @@ public sealed class UnifiLegacyClient : IDisposable
     public Task DeleteNetworkAsync(string id, CancellationToken ct = default)
         => DeleteAsync("networkconf", id, ct);
 
+    // ── Known clients / DHCP reservations (rest/user) ─────────────────────────
+    // NOTE there is no Delete here, deliberately. Removing a known client discards
+    // its name and history along with the reservation; retiring a reservation is
+    // UpdateUserAsync with UseFixedIp=false, which is reversible.
+
+    public Task<IReadOnlyList<UnifiUser>> ListUsersAsync(CancellationToken ct = default)
+        => ListAsync<UnifiUser>("user", ct);
+
+    /// <summary>
+    /// Partial-update a known client. Only the non-null properties of
+    /// <paramref name="spec"/> are sent, so untouched fields keep their server values.
+    /// </summary>
+    public Task<UnifiUser> UpdateUserAsync(string id, UnifiUser spec, CancellationToken ct = default)
+        => UpdateAsync("user", id, spec, ct);
+
+    /// <summary>
+    /// Register a client the controller has never seen. Rarely needed — a guest that
+    /// has ever taken a lease already has a row, and <see cref="UpdateUserAsync"/> is
+    /// the path for it.
+    /// </summary>
+    public Task<UnifiUser> CreateUserAsync(UnifiUser spec, CancellationToken ct = default)
+        => CreateAsync("user", spec, ct);
+
     // ── Generic REST verbs over the {meta,data} envelope ──────────────────────
 
     private async Task<IReadOnlyList<T>> ListAsync<T>(string resource, CancellationToken ct)
@@ -83,6 +106,18 @@ public sealed class UnifiLegacyClient : IDisposable
         return env.Data.Count > 0
             ? env.Data[0]
             : throw new UnifiLegacyException($"create {resource}: ok but no object returned");
+    }
+
+    private async Task<T> UpdateAsync<T>(string resource, string id, T spec, CancellationToken ct)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(id);
+        var json = JsonSerializer.Serialize(spec, SerializerOptions);
+        using var resp = await _session.SendAsync(
+            HttpMethod.Put, $"rest/{resource}/{id}", UnifiLegacySession.JsonBody(json), ct).ConfigureAwait(false);
+        var env = await ReadEnvelopeAsync<T>(resp, resource, ct).ConfigureAwait(false);
+        // A PUT is ok-with-empty-data on some resources; echo the request back so
+        // callers always get an object rather than having to null-check a success.
+        return env.Data.Count > 0 ? env.Data[0] : spec;
     }
 
     private async Task DeleteAsync(string resource, string id, CancellationToken ct)
