@@ -19,6 +19,9 @@ namespace UnifiSharp.Legacy;
 public sealed class UnifiLegacySession : IDisposable
 {
     private readonly UnifiLegacyOptions _options;
+
+    /// <summary>The options this session was built from — callers need <see cref="UnifiLegacyOptions.SiteV2Url"/>.</summary>
+    public UnifiLegacyOptions Options => _options;
     private readonly HttpClient _http;
     private readonly Uri _loginUrl;
     private string? _csrfToken;
@@ -96,13 +99,43 @@ public sealed class UnifiLegacySession : IDisposable
         return resp;
     }
 
-    private async Task<HttpResponseMessage> SendOnceAsync(
+    /// <summary>
+    /// Send to an ABSOLUTE url on the same controller, reusing this session's auth. The
+    /// v2 site API (<c>…/proxy/network/v2/api/site/&lt;site&gt;</c>) is not under the legacy
+    /// site base, so it cannot be reached with a relative path.
+    /// </summary>
+    public async Task<HttpResponseMessage> SendAbsoluteAsync(
+        HttpMethod method, Uri url, HttpContent? content, CancellationToken ct = default)
+    {
+        if (!_loggedIn)
+        {
+            await LoginAsync(ct).ConfigureAwait(false);
+        }
+
+        var resp = await SendOnceAsync(method, url, content, ct).ConfigureAwait(false);
+        if (resp.StatusCode == HttpStatusCode.Unauthorized && !_options.UsesApiKey)
+        {
+            resp.Dispose();
+            await LoginAsync(ct).ConfigureAwait(false);
+            resp = await SendOnceAsync(method, url, content, ct).ConfigureAwait(false);
+        }
+
+        return resp;
+    }
+
+    private Task<HttpResponseMessage> SendOnceAsync(
         HttpMethod method, string relativePath, HttpContent? content, CancellationToken ct)
     {
         // BaseUrl is the site base (…/api/s/<site>); ensure a trailing slash so the
         // relative path appends rather than replaces the last segment.
         var baseWithSlash = _options.BaseUrl.AbsoluteUri.TrimEnd('/') + "/";
-        using var req = new HttpRequestMessage(method, new Uri(new Uri(baseWithSlash), relativePath));
+        return SendOnceAsync(method, new Uri(new Uri(baseWithSlash), relativePath), content, ct);
+    }
+
+    private async Task<HttpResponseMessage> SendOnceAsync(
+        HttpMethod method, Uri url, HttpContent? content, CancellationToken ct)
+    {
+        using var req = new HttpRequestMessage(method, url);
         if (content is not null)
         {
             req.Content = content;

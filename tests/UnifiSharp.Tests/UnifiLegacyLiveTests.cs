@@ -72,6 +72,22 @@ public class UnifiLegacyReadOnlyLiveTests : IClassFixture<LegacyReadOnlyFixture>
         Assert.All(users.Where(u => u.UseFixedIp == true),
             u => Assert.False(string.IsNullOrEmpty(u.FixedIp)));  // a reservation always carries an address
     }
+
+    [SkippableFact]
+    public async Task Static_dns_reads_from_the_v2_site_api()
+    {
+        Skip.If(_fixture.Client is null, "No UniFi env — skipping live read test.");
+
+        // Exercises the whole v2 path: a different base URL from the legacy surface, a bare
+        // array instead of {meta,data}, reached through SendAbsoluteAsync.
+        var records = await _fixture.Client!.ListStaticDnsAsync();
+
+        Assert.All(records, r =>
+        {
+            Assert.False(string.IsNullOrEmpty(r.Key));
+            Assert.False(string.IsNullOrEmpty(r.RecordType));
+        });
+    }
 }
 
 public class UnifiLegacyLiveTests : IClassFixture<LegacyContainerFixture>

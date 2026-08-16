@@ -136,6 +136,71 @@ public class UnifiLegacyClientTests
         Assert.Contains("\"vlan\":\"3990\"", JsonSerializer.Serialize(new UnifiNetwork { Vlan = "3990" }, Json));
     }
 
+    // ---- v2 site API / static DNS ----
+
+    [Fact]
+    public void SiteV2Url_is_derived_from_the_legacy_base()
+    {
+        // Different surface, same controller: …/api/s/<site> -> …/v2/api/site/<site>.
+        Assert.Equal(
+            new Uri("https://gw.lan:11443/proxy/network/v2/api/site/default"),
+            Options().SiteV2Url);
+        Assert.Equal("default", Options().Site);
+    }
+
+    [Fact]
+    public void Site_is_parsed_from_the_base_url_not_assumed()
+    {
+        var o = Options("https://gw.lan/proxy/network/api/s/otherplace");
+        Assert.Equal("otherplace", o.Site);
+        Assert.Equal(new Uri("https://gw.lan/proxy/network/v2/api/site/otherplace"), o.SiteV2Url);
+    }
+
+    [Fact]
+    public void StaticDns_round_trips_the_controller_shape()
+    {
+        // Captured from a real POST response — note v2 returns a BARE object, no envelope.
+        const string body =
+            """
+            { "_id": "6a2e", "enabled": true, "key": "*.topaz.local.dev", "port": 0,
+              "priority": 0, "record_type": "A", "ttl": 300, "value": "10.50.0.10", "weight": 0 }
+            """;
+
+        var r = JsonSerializer.Deserialize<UnifiStaticDnsRecord>(body, Json)!;
+
+        Assert.Equal("*.topaz.local.dev", r.Key);      // wildcards are a supported key
+        Assert.Equal("A", r.RecordType);
+        Assert.Equal("10.50.0.10", r.Value);
+        Assert.Equal(300, r.Ttl);
+        Assert.True(r.Enabled);
+    }
+
+    [Fact]
+    public void StaticDns_list_deserializes_a_bare_array()
+    {
+        // The legacy surface wraps everything in {meta,data}; v2 does not. Getting this
+        // wrong fails at runtime only, against a real controller.
+        const string body = """[{ "key": "a.example", "value": "10.0.0.1", "record_type": "A" }]""";
+        var rows = JsonSerializer.Deserialize<IReadOnlyList<UnifiStaticDnsRecord>>(body, Json)!;
+        Assert.Equal("a.example", Assert.Single(rows).Key);
+    }
+
+    [Fact]
+    public void StaticDns_write_body_is_complete_because_partials_are_rejected()
+    {
+        // The v2 endpoint answers a partial PUT with 400 Validation failed, so every field
+        // must serialize even at its default — the omit-nulls serializer must not thin it out.
+        var json = JsonSerializer.Serialize(
+            new UnifiStaticDnsRecord { Key = "*.lab.chrison.dev", Value = "10.10.0.13" }, Json);
+
+        foreach (var field in new[] { "key", "value", "record_type", "enabled", "ttl", "port", "priority", "weight" })
+        {
+            Assert.Contains($"\"{field}\":", json);
+        }
+
+        Assert.DoesNotContain("\"_id\"", json);   // server-assigned; omitted on create
+    }
+
     // ---- API-key auth mode ----
 
     private static UnifiLegacyOptions KeyOptions() =>
