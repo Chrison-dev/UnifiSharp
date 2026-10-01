@@ -55,9 +55,8 @@ build system, a NUKE successor). Targets: `Compile` → `Test` → `Pack` → `P
 ./build.sh Pack         # produce the Chrison.* nupkgs into artifacts/
 ```
 
-Requires the .NET 10 SDK (see `global.json`) and `GITHUB_PACKAGES_PAT` in the
-environment (a PAT with `read:packages` on the Fallout-build org — the build restores
-`Fallout.*` from that feed, see `nuget.config`). CI runs `./build.sh Test` on push/PR.
+Requires the .NET 10 SDK (see `global.json`); everything, including `Fallout.*`,
+restores from nuget.org with no credentials. CI runs `./build.sh Test` on push/PR.
 
 ## Use it
 
