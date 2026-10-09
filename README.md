@@ -167,6 +167,7 @@ await fw.CreateAsync(spec, names);
 - **Equality is semantic**, so `live == desired` is the drift check.
 - **`FirewallPolicyJson.FromJson`** returns a reason instead of a spec for anything outside the subset: domain/app/region filters, schedules, matching lists and the like. A caller can never mistake "can't compare" for "matches".
 - **`Ipv6InterfaceId`** is written with the `/::ffff:ffff:ffff:ffff` mask, so it matches the host suffix under *any* delegated prefix. Pinning a full IPv6 address breaks the day the ISP re-delegates.
+  ⚠ **The controller accepts this but the gateway may not enforce it.** On a UCG running UniFi OS 5.1.33 / Network 10.6.106, an External → LAN allow matched by IID was stored correctly (`matching_target: IID`) and then matched **nothing**: the hit counter froze and inbound traffic was dropped. Check the policy's hit counter after switching a rule to an IID match, and fall back to the full address if it stays flat.
 - **Updates are PUT (full replacement).** Only ever write `USER_DEFINED` policies (`LiveFirewallPolicy.IsUserDefined`).
 - **Ordering is not managed.** New user policies land at index 10000, ahead of the predefined allow/block defaults.
 - Generated against the 10.4.57 spec and checked live against Network 10.6.106.
