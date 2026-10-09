@@ -143,6 +143,34 @@ nullable: on v2 a partial is not something you can send, so the type should not 
 Static-DNS **wildcards are supported** and match arbitrary labels
 (`*.lab.example.com` answers `anything.lab.example.com`).
 
+## Firewall policies (`UnifiSharp.Firewall`)
+
+Zone-based firewall policies (UniFi Network 9+) go through the **official** integration API,
+`{UNIFI_BASE_URL}/v1/sites/{site}/firewall/policies`, which has full CRUD. They don't use the
+legacy adapter.
+
+```csharp
+using var fw = new UnifiFirewallClient(UnifiClientOptions.TryFromEnvironment()!);
+var names = await fw.GetNamesAsync();                 // zone + network name → id
+var spec = new FirewallPolicySpec
+{
+    Name = "qbittorrent-peers-v6",
+    Source = new() { Zone = "External" },
+    Destination = new() { Zone = "Homelab", Ipv6InterfaceId = "::6342:9", Ports = ["63429"] },
+    IpVersion = FirewallIpVersion.IPv6,
+    Protocol = "tcp_udp",
+};
+await fw.CreateAsync(spec, names);
+```
+
+- **`FirewallPolicySpec`** is the supported subset: zones, addresses (IP, CIDR, `a-b` range), networks, an IPv6 interface identifier, ports, IP version, protocol, action, logging and enabled.
+- **Equality is semantic**, so `live == desired` is the drift check.
+- **`FirewallPolicyJson.FromJson`** returns a reason instead of a spec for anything outside the subset: domain/app/region filters, schedules, matching lists and the like. A caller can never mistake "can't compare" for "matches".
+- **`Ipv6InterfaceId`** is written with the `/::ffff:ffff:ffff:ffff` mask, so it matches the host suffix under *any* delegated prefix. Pinning a full IPv6 address breaks the day the ISP re-delegates.
+- **Updates are PUT (full replacement).** Only ever write `USER_DEFINED` policies (`LiveFirewallPolicy.IsUserDefined`).
+- **Ordering is not managed.** New user policies land at index 10000, ahead of the predefined allow/block defaults.
+- Generated against the 10.4.57 spec and checked live against Network 10.6.106.
+
 ## Status
 
 Read client + `discover` + `unifisharp` CLI building from the 10.4.57 spec.
