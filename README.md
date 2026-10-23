@@ -126,6 +126,9 @@ With `UNIFI_LOCAL_HOST` alone the site URL is derived as
 > port-forward, a firewall group and a VLAN) are gated on *session* auth on purpose,
 > so a shell holding only an API key can never point them at a production gateway.
 > Read-only live checks (`UnifiLegacyReadOnlyLiveTests`) run in either mode.
+> `UnifiLegacyNetworkRawLiveTests` (a raw DHCP-DNS write on a scratch network, then a
+> byte-for-byte restore) is stricter still: it needs `UNIFI_LEGACY_BASE_URL` +
+> `UNIFI_USERNAME` + `UNIFI_PASSWORD` and **refuses** any host but localhost / 127.0.0.1 / ::1.
 
 ### Two surfaces, two sets of rules
 

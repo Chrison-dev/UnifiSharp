@@ -1,3 +1,4 @@
+using System.Text.Json.Nodes;
 using UnifiSharp.Legacy;
 using Xunit;
 
@@ -182,4 +183,151 @@ public class UnifiLegacyLiveTests : IClassFixture<LegacyContainerFixture>
         Assert.False(string.IsNullOrEmpty(created.Id));
         await client.DeleteNetworkAsync(created.Id!);
     }
+}
+
+/// <summary>
+/// Proves a field-scoped raw network write is reversible: setting DHCP DNS touches only the
+/// DNS keys, and putting back the saved object restores the network exactly.
+/// <para>Stricter gate than <see cref="UnifiLegacyLiveTests"/>: this PUTs over a whole network,
+/// so it runs only against a controller on this machine. Missing env skips; an env pointing
+/// anywhere else is refused (fails) before any login, never quietly skipped.</para>
+/// </summary>
+public class UnifiLegacyNetworkRawLiveTests
+{
+    private static readonly string[] Servers = ["10.20.0.53", "10.20.0.54"];
+
+    private static readonly HashSet<string> DnsKeys =
+        ["dhcpd_dns_enabled", "dhcpd_dns_1", "dhcpd_dns_2", "dhcpd_dns_3", "dhcpd_dns_4"];
+
+    // Keys the controller rewrites on its own between reads, excluded from every comparison
+    // below. Empty until a run shows one — add each by name with the reason it moves, so a
+    // real difference can never hide here unannounced.
+    private static readonly HashSet<string> VolatileKeys = [];
+
+    [SkippableFact]
+    public async Task Network_dhcp_dns_write_is_reversible_byte_for_byte()
+    {
+        var baseUrl = Environment.GetEnvironmentVariable("UNIFI_LEGACY_BASE_URL");
+        Skip.If(
+            string.IsNullOrEmpty(baseUrl)
+            || string.IsNullOrEmpty(Environment.GetEnvironmentVariable("UNIFI_USERNAME"))
+            || string.IsNullOrEmpty(Environment.GetEnvironmentVariable("UNIFI_PASSWORD")),
+            "UNIFI_LEGACY_BASE_URL + UNIFI_USERNAME + UNIFI_PASSWORD not all set — skipping local write test.");
+
+        // Check the URL the client will actually use, not just the variable: TryFromEnvironment
+        // is what resolves it, and it is the one that has to be local.
+        var options = UnifiLegacyOptions.TryFromEnvironment()
+            ?? throw new InvalidOperationException("UNIFI_* env is set but did not resolve to legacy options.");
+        RefuseUnlessLocal(new Uri(baseUrl!));
+        RefuseUnlessLocal(options.BaseUrl);
+
+        using var client = new UnifiLegacyClient(options);
+
+        var before = await client.ListNetworksRawAsync();
+        var (vlan, octet) = PickUnusedVlanAndSubnet(before);
+
+        var created = await client.CreateNetworkAsync(new UnifiNetwork
+        {
+            Name = $"scratch-dhcpdns-{Guid.NewGuid().ToString("N")[..8]}",
+            Purpose = "corporate",
+            VlanEnabled = true,
+            Vlan = vlan.ToString(),
+            IpSubnet = $"10.232.{octet}.1/24",
+            DhcpdEnabled = true,
+            DhcpdStart = $"10.232.{octet}.6",
+            DhcpdStop = $"10.232.{octet}.254",
+        });
+        Assert.False(string.IsNullOrEmpty(created.Id));
+        var id = created.Id!;
+
+        try
+        {
+            // Kept as text so nothing below can mutate the baseline.
+            var saved = (await client.GetNetworkRawAsync(id)).ToJsonString();
+            var savedObj = Parse(saved);
+
+            // UnifiNetwork cannot express dhcpd_dns_enabled, so "DHCP DNS off" is the controller's
+            // create default — asserted, not assumed.
+            Assert.True(NetworkDhcpDns.Read(savedObj) is null,
+                $"precondition: a new network should have DHCP DNS off (auto); dhcpd_dns_enabled is {savedObj["dhcpd_dns_enabled"]?.ToJsonString() ?? "absent"}");
+
+            await client.ReplaceNetworkRawAsync(id, NetworkDhcpDns.With(Parse(saved), Servers));
+            var changed = await client.GetNetworkRawAsync(id);
+
+            Assert.Equal(Servers, NetworkDhcpDns.Read(changed));
+            AssertSameKeys(savedObj, changed, ignore: DnsKeys, what: "after the DNS write, a non-DNS key");
+            Assert.Equal((string?)savedObj["_id"], (string?)changed["_id"]);
+            Assert.Equal((string?)savedObj["site_id"], (string?)changed["site_id"]);
+
+            await client.ReplaceNetworkRawAsync(id, Parse(saved));
+            var restored = await client.GetNetworkRawAsync(id);
+
+            AssertSameKeys(savedObj, restored, ignore: [], what: "after restoring the saved object, key");
+        }
+        finally
+        {
+            await client.DeleteNetworkAsync(id);
+        }
+
+        // Every other network, whole: the scratch network is gone and nothing else moved.
+        var after = await client.ListNetworksRawAsync();
+        var beforeById = ById(before);
+        var afterById = ById(after);
+        Assert.Equal(beforeById.Keys.Order(), afterById.Keys.Order());
+        foreach (var (otherId, was) in beforeById)
+        {
+            AssertSameKeys(was, afterById[otherId], ignore: [], what: $"network {otherId} ('{was["name"]}') changed: key");
+        }
+    }
+
+    private static void RefuseUnlessLocal(Uri url)
+    {
+        // Uri.Host lower-cases names and brackets IPv6, so ::1 arrives as "[::1]".
+        if (url.Host is not ("localhost" or "127.0.0.1" or "[::1]"))
+        {
+            throw new InvalidOperationException(
+                $"Refusing to write networks on {url.Host}: this test only runs against a controller on localhost / 127.0.0.1 / ::1.");
+        }
+    }
+
+    private static (int Vlan, int Octet) PickUnusedVlanAndSubnet(IReadOnlyList<JsonObject> networks)
+    {
+        // node.ToString() gives the bare text for both shapes the vlan arrives in (number or string).
+        var vlans = networks.Select(n => n["vlan"]?.ToString()).ToHashSet();
+        var subnets = networks.Select(n => n["ip_subnet"]?.ToString() ?? "").ToList();
+        for (var attempt = 0; attempt < 20; attempt++)
+        {
+            var vlan = Random.Shared.Next(3900, 4000);         // inside UniFi's valid 1–4009
+            var octet = Random.Shared.Next(0, 256);
+            if (!vlans.Contains(vlan.ToString()) && !subnets.Any(s => s.StartsWith($"10.232.{octet}.", StringComparison.Ordinal)))
+            {
+                return (vlan, octet);
+            }
+        }
+
+        throw new InvalidOperationException("No free VLAN 3900–3999 / 10.232.x.0/24 found for the scratch network.");
+    }
+
+    // Compared as each value's JSON text, not semantically: the claim is byte-for-byte, so 1
+    // vs 1.0 or a re-ordered nested object is a difference. The union of keys is walked, so a
+    // key the controller added or dropped is reported too.
+    private static void AssertSameKeys(JsonObject expected, JsonObject actual, IReadOnlyCollection<string> ignore, string what)
+    {
+        foreach (var key in expected.Select(p => p.Key).Union(actual.Select(p => p.Key)))
+        {
+            if (ignore.Contains(key) || VolatileKeys.Contains(key))
+            {
+                continue;
+            }
+
+            var want = expected.TryGetPropertyValue(key, out var e) ? e?.ToJsonString() ?? "null" : "<absent>";
+            var got = actual.TryGetPropertyValue(key, out var a) ? a?.ToJsonString() ?? "null" : "<absent>";
+            Assert.True(want == got, $"{what} '{key}' differs: expected {want}, got {got}");
+        }
+    }
+
+    private static Dictionary<string, JsonObject> ById(IReadOnlyList<JsonObject> networks) =>
+        networks.ToDictionary(n => (string?)n["_id"] ?? throw new InvalidOperationException($"network without a string _id: {n.ToJsonString()}"));
+
+    private static JsonObject Parse(string json) => JsonNode.Parse(json)!.AsObject();
 }
