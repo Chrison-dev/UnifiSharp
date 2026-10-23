@@ -1,8 +1,12 @@
+using System.Net;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 using UnifiSharp.Legacy;
 
 namespace UnifiSharp.Tests;
+
+#pragma warning disable CS0618 // UnifiLegacyClient is intentionally obsolete (ADR-0003)
 
 // Pure unit tests for the legacy write adapter — no controller required.
 public class UnifiLegacyClientTests
@@ -297,5 +301,300 @@ public class UnifiLegacyClientTests
         Assert.True(u.UseFixedIp);
         Assert.Equal("10.10.135.221", u.FixedIp);
         Assert.Equal("shell.devops.chrison.internal", u.LocalDnsRecord);
+    }
+
+    // ---- rest/networkconf as raw JSON — read-modify-write without the lossy model ----
+
+    // Synthetic, not captured: every JSON kind the controller can send, plus keys no model
+    // knows about. A number with a trailing zero and an exponent proves number TEXT survives,
+    // not just the value.
+    private const string RawNetwork =
+        """
+        { "_id": "net1", "name": "Consumer", "purpose": "corporate", "vlan": 1010,
+          "vlan_enabled": true, "dhcpd_dns_enabled": true,
+          "dhcpd_dns_1": "10.20.0.1", "dhcpd_dns_2": "", "dhcpd_dns_3": "", "dhcpd_dns_4": "",
+          "dhcpd_leasetime": 86400, "ratio": 1.50, "big": 1e3, "nothing": null,
+          "nat_outbound_ip_addresses": [], "ipv6_ra_preferred_lifetime": 14400,
+          "dhcp_relay": { "servers": ["10.0.0.1", null], "enabled": false },
+          "some_future_field": { "nested": [1, { "deep": true }] } }
+        """;
+
+    private static string Envelope(string dataArray, string rc = "ok", string? msg = null) =>
+        $$"""{ "meta": { "rc": "{{rc}}"{{(msg is null ? "" : $", \"msg\": \"{msg}\"")}} }, "data": {{dataArray}} }""";
+
+    [Fact]
+    public async Task GetNetworkRaw_gets_the_one_row_with_every_key_intact()
+    {
+        var handler = new FakeHandler(Envelope($"[{RawNetwork}]"));
+        using var client = handler.Client();
+
+        var net = await client.GetNetworkRawAsync("net1");
+
+        var req = Assert.Single(handler.Requests);
+        Assert.Equal(HttpMethod.Get, req.Method);
+        Assert.EndsWith("/api/s/default/rest/networkconf/net1", req.Uri.AbsolutePath);
+        Assert.True(JsonNode.DeepEquals(JsonNode.Parse(RawNetwork), net));
+        Assert.Equal("1.50", net["ratio"]!.ToJsonString());   // number text, not a re-formatted double
+        Assert.True(net.ContainsKey("nothing"));                // an explicit null is a key, not an absence
+    }
+
+    [Theory]
+    [InlineData("[]")]
+    [InlineData("""[{ "_id": "a" }, { "_id": "b" }]""")]
+    [InlineData("[null]")]
+    public async Task GetNetworkRaw_throws_unless_exactly_one_row(string data)
+    {
+        // Zero rows or two is not "the" network — a read-modify-write on a guess is the bug.
+        using var client = new FakeHandler(Envelope(data)).Client();
+        await Assert.ThrowsAsync<UnifiLegacyException>(() => client.GetNetworkRawAsync("net1"));
+    }
+
+    [Fact]
+    public async Task ListNetworksRaw_returns_every_row_raw()
+    {
+        var handler = new FakeHandler(Envelope($$"""[{{RawNetwork}}, { "_id": "net2", "x": 1 }]"""));
+        using var client = handler.Client();
+
+        var nets = await client.ListNetworksRawAsync();
+
+        Assert.EndsWith("/rest/networkconf", Assert.Single(handler.Requests).Uri.AbsolutePath);
+        Assert.Equal(2, nets.Count);
+        Assert.True(JsonNode.DeepEquals(JsonNode.Parse(RawNetwork), nets[0]));
+    }
+
+    [Fact]
+    public async Task ReplaceNetworkRaw_puts_the_body_verbatim()
+    {
+        var handler = new FakeHandler(Envelope($"[{RawNetwork}]"));
+        using var client = handler.Client();
+        var read = await client.GetNetworkRawAsync("net1");
+
+        await client.ReplaceNetworkRawAsync("net1", read);
+
+        var put = handler.Requests[1];
+        Assert.Equal(HttpMethod.Put, put.Method);
+        Assert.EndsWith("/rest/networkconf/net1", put.Uri.AbsolutePath);
+        var sent = JsonNode.Parse(put.Body!)!.AsObject();
+        Assert.True(JsonNode.DeepEquals(JsonNode.Parse(RawNetwork), sent));
+        // Byte-for-byte on numbers: a double round-trip would print 1.5 and 1000.
+        Assert.Contains("\"ratio\":1.50", put.Body);
+        Assert.Contains("\"big\":1e3", put.Body);
+        Assert.Contains("\"vlan\":1010", put.Body);
+        Assert.Contains("\"nothing\":null", put.Body);
+    }
+
+    [Fact]
+    public async Task ReplaceNetworkRaw_does_not_mutate_the_callers_object()
+    {
+        using var client = new FakeHandler(Envelope("[]")).Client();
+        var body = JsonNode.Parse(RawNetwork)!.AsObject();
+
+        await client.ReplaceNetworkRawAsync("net1", body);
+
+        Assert.True(JsonNode.DeepEquals(JsonNode.Parse(RawNetwork), body));
+    }
+
+    [Theory]
+    [InlineData("GET")]
+    [InlineData("PUT")]
+    public async Task Raw_network_error_envelope_surfaces_the_api_msg(string verb)
+    {
+        // The legacy API answers validation failures with HTTP 400 and rc:error.
+        using var client = new FakeHandler(
+            Envelope("[]", rc: "error", msg: "api.err.InvalidPayload"), HttpStatusCode.BadRequest).Client();
+
+        var ex = await Assert.ThrowsAsync<UnifiLegacyException>(() => verb == "GET"
+            ? client.GetNetworkRawAsync("net1")
+            : client.ReplaceNetworkRawAsync("net1", JsonNode.Parse(RawNetwork)!.AsObject()));
+
+        Assert.Contains("api.err.InvalidPayload", ex.Message);
+    }
+
+    [Theory]
+    [InlineData("""{ "_id": "net2", "name": "Other" }""")]
+    [InlineData("""{ "name": "no id" }""")]
+    [InlineData("""{ "_id": null }""")]
+    [InlineData("""{ "_id": 1 }""")]
+    public async Task ReplaceNetworkRaw_refuses_a_body_that_is_not_the_named_network(string json)
+    {
+        // A full replacement of net1 with net2's body would silently turn one network into another.
+        var handler = new FakeHandler(Envelope("[]"));
+        using var client = handler.Client();
+
+        await Assert.ThrowsAsync<ArgumentException>(
+            () => client.ReplaceNetworkRawAsync("net1", JsonNode.Parse(json)!.AsObject()));
+        Assert.Empty(handler.Requests);
+    }
+
+    [Theory]
+    [InlineData("a/../x")]
+    [InlineData("..")]
+    [InlineData(".")]
+    [InlineData("a?b=c")]
+    [InlineData("a#b")]
+    [InlineData("a%2Fb")]
+    [InlineData("a b")]
+    public async Task Raw_network_rejects_an_id_that_is_not_a_plain_path_segment(string id)
+    {
+        var handler = new FakeHandler(Envelope($"[{RawNetwork}]"));
+        using var client = handler.Client();
+        var body = JsonNode.Parse(RawNetwork)!.AsObject();
+        body["_id"] = id;
+
+        await Assert.ThrowsAsync<ArgumentException>(() => client.GetNetworkRawAsync(id));
+        await Assert.ThrowsAsync<ArgumentException>(() => client.ReplaceNetworkRawAsync(id, body));
+        Assert.Empty(handler.Requests);
+    }
+
+    [Theory]
+    [InlineData("""{ "meta": { "rc": "ok" }, "data": null }""")]
+    public async Task Raw_network_reports_a_null_data_array_as_an_api_shape_error(string response)
+    {
+        using var client = new FakeHandler(response).Client();
+
+        await Assert.ThrowsAsync<UnifiLegacyException>(() => client.GetNetworkRawAsync("net1"));
+        await Assert.ThrowsAsync<UnifiLegacyException>(() => client.ListNetworksRawAsync());
+        await Assert.ThrowsAsync<UnifiLegacyException>(
+            () => client.ReplaceNetworkRawAsync("net1", JsonNode.Parse(RawNetwork)!.AsObject()));
+    }
+
+    [Fact]
+    public async Task ReplaceNetworkRaw_sends_With_output_byte_for_byte()
+    {
+        // DeepEquals compares values, so it cannot see number text, key order or a dropped
+        // null; only the literal wire body can. Expected is RawNetwork minified by hand, with
+        // the two DNS slots changed in place.
+        var handler = new FakeHandler(Envelope("[]"));
+        using var client = handler.Client();
+
+        await client.ReplaceNetworkRawAsync("net1", NetworkDhcpDns.With(Raw(), ["10.20.0.53", "10.20.0.54"]));
+
+        const string expected =
+            """{"_id":"net1","name":"Consumer","purpose":"corporate","vlan":1010,"vlan_enabled":true,"dhcpd_dns_enabled":true,"dhcpd_dns_1":"10.20.0.53","dhcpd_dns_2":"10.20.0.54","dhcpd_dns_3":"","dhcpd_dns_4":"","dhcpd_leasetime":86400,"ratio":1.50,"big":1e3,"nothing":null,"nat_outbound_ip_addresses":[],"ipv6_ra_preferred_lifetime":14400,"dhcp_relay":{"servers":["10.0.0.1",null],"enabled":false},"some_future_field":{"nested":[1,{"deep":true}]}}""";
+        Assert.Equal(expected, Assert.Single(handler.Requests).Body);
+    }
+
+    // ---- NetworkDhcpDns — the dhcpd_dns_N naming, kept out of every caller ----
+
+    private static JsonObject Raw() => JsonNode.Parse(RawNetwork)!.AsObject();
+
+    [Fact]
+    public void DhcpDns_With_changes_only_the_dns_keys_and_leaves_the_input_alone()
+    {
+        var input = Raw();
+
+        var output = NetworkDhcpDns.With(input, ["10.20.0.53", "10.20.0.54"]);
+
+        Assert.True(JsonNode.DeepEquals(JsonNode.Parse(RawNetwork), input));   // input untouched
+        Assert.NotSame(input, output);
+
+        var changed = input.Select(kv => kv.Key)
+            .Union(output.Select(kv => kv.Key))
+            .Where(k => !JsonNode.DeepEquals(input[k], output[k]) || input.ContainsKey(k) != output.ContainsKey(k))
+            .ToHashSet();
+        // dhcpd_dns_enabled was already true and slots 3-4 already blank, so only 1 and 2 move here;
+        // the invariant is that nothing OUTSIDE the DNS key set moves.
+        Assert.Subset(
+            new HashSet<string> { "dhcpd_dns_enabled", "dhcpd_dns_1", "dhcpd_dns_2", "dhcpd_dns_3", "dhcpd_dns_4" },
+            changed);
+        Assert.Equal("10.20.0.53", (string?)output["dhcpd_dns_1"]);
+        Assert.Equal("10.20.0.54", (string?)output["dhcpd_dns_2"]);
+    }
+
+    [Fact]
+    public void DhcpDns_With_enables_dns_and_writes_all_four_slots_from_auto()
+    {
+        var input = JsonNode.Parse("""{ "_id": "n", "dhcpd_dns_enabled": false, "other": 7 }""")!.AsObject();
+
+        var output = NetworkDhcpDns.With(input, ["10.20.0.53"]);
+
+        Assert.True((bool)output["dhcpd_dns_enabled"]!);
+        Assert.Equal("10.20.0.53", (string?)output["dhcpd_dns_1"]);
+        Assert.Equal("", (string?)output["dhcpd_dns_2"]);
+        Assert.Equal("", (string?)output["dhcpd_dns_3"]);
+        Assert.Equal("", (string?)output["dhcpd_dns_4"]);
+        Assert.Equal(7, (int)output["other"]!);
+        Assert.False((bool)input["dhcpd_dns_enabled"]!);
+        Assert.False(input.ContainsKey("dhcpd_dns_1"));
+    }
+
+    [Fact]
+    public void DhcpDns_With_blanks_a_dropped_slot_rather_than_removing_it()
+    {
+        // Removing the key would leave the controller's old value in place on a full PUT.
+        var input = NetworkDhcpDns.With(Raw(), ["1.1.1.1", "8.8.8.8", "9.9.9.9"]);
+
+        var output = NetworkDhcpDns.With(input, ["1.1.1.1", "8.8.8.8"]);
+
+        Assert.True(output.ContainsKey("dhcpd_dns_3"));
+        Assert.Equal("", (string?)output["dhcpd_dns_3"]);
+        Assert.Equal("9.9.9.9", (string?)input["dhcpd_dns_3"]);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(5)]
+    public void DhcpDns_With_rejects_an_empty_or_oversized_list(int count)
+    {
+        // Empty would mean "clear the DNS" — never something a declaration should do silently.
+        var servers = Enumerable.Range(1, count).Select(i => $"10.0.0.{i}").ToList();
+        Assert.Throws<ArgumentException>(() => NetworkDhcpDns.With(Raw(), servers));
+    }
+
+    [Theory]
+    [InlineData("""{ "dhcpd_dns_enabled": false, "dhcpd_dns_1": "1.1.1.1" }""")]
+    [InlineData("""{ "dhcpd_dns_1": "1.1.1.1" }""")]
+    public void DhcpDns_Read_is_null_when_dns_is_automatic(string json)
+    {
+        // Disabled means the gateway hands itself out; stale slot values are not the live list.
+        Assert.Null(NetworkDhcpDns.Read(JsonNode.Parse(json)!.AsObject()));
+    }
+
+    [Fact]
+    public void DhcpDns_Read_returns_the_slots_in_order_skipping_blanks()
+    {
+        var net = JsonNode.Parse(
+            """{ "dhcpd_dns_enabled": true, "dhcpd_dns_1": "10.20.0.53", "dhcpd_dns_2": "", "dhcpd_dns_3": "10.20.0.54" }""")!
+            .AsObject();
+
+        Assert.Equal(["10.20.0.53", "10.20.0.54"], NetworkDhcpDns.Read(net));
+    }
+
+    [Theory]
+    [InlineData("""{ "dhcpd_dns_enabled": "yes" }""")]
+    [InlineData("""{ "dhcpd_dns_enabled": true, "dhcpd_dns_1": 10 }""")]
+    public void DhcpDns_Read_throws_on_a_shape_it_does_not_recognise(string json)
+    {
+        // A field present but shaped differently is unknown, not "auto" and not empty.
+        Assert.Throws<UnifiLegacyException>(() => NetworkDhcpDns.Read(JsonNode.Parse(json)!.AsObject()));
+    }
+
+    [Theory]
+    [InlineData("""{ "dhcpd_dns_enabled": "yes" }""")]
+    [InlineData("""{ "dhcpd_dns_enabled": null }""")]
+    [InlineData("""{ "dhcpd_dns_enabled": true, "dhcpd_dns_1": 10 }""")]
+    [InlineData("""{ "dhcpd_dns_enabled": false, "dhcpd_dns_2": { "ip": "1.1.1.1" } }""")]
+    public void DhcpDns_With_throws_on_a_shape_it_does_not_recognise(string json)
+    {
+        // Overwriting a malformed key would paper over the very drift Read refuses to guess at.
+        Assert.Throws<UnifiLegacyException>(
+            () => NetworkDhcpDns.With(JsonNode.Parse(json)!.AsObject(), ["10.20.0.53"]));
+    }
+
+    // Records each request (body read eagerly — the client disposes it) and answers with a
+    // canned envelope. API-key options, so the session never makes a login request.
+    private sealed class FakeHandler(string responseBody, HttpStatusCode status = HttpStatusCode.OK) : HttpMessageHandler
+    {
+        public List<(HttpMethod Method, Uri Uri, string? Body)> Requests { get; } = [];
+
+        public UnifiLegacyClient Client() =>
+            new(new UnifiLegacySession(KeyOptions(), this), ownsSession: true);
+
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+        {
+            var body = request.Content is null ? null : await request.Content.ReadAsStringAsync(ct);
+            Requests.Add((request.Method, request.RequestUri!, body));
+            return new HttpResponseMessage(status) { Content = new StringContent(responseBody) };
+        }
     }
 }

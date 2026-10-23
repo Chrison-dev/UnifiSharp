@@ -28,12 +28,21 @@ public sealed class UnifiLegacySession : IDisposable
     private bool _loggedIn;
 
     public UnifiLegacySession(UnifiLegacyOptions options)
+        : this(options, CreateHandler(options)) { }
+
+    // Test seam: lets unit tests assert the exact bytes on the wire without a controller.
+    internal UnifiLegacySession(UnifiLegacyOptions options, HttpMessageHandler handler)
     {
         ArgumentNullException.ThrowIfNull(options);
         options.Validate();
         _options = options;
         _loginUrl = new Uri(_options.ControllerRoot, "/api/auth/login");
+        _http = new HttpClient(handler);
+    }
 
+    private static HttpClientHandler CreateHandler(UnifiLegacyOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(options);
         var handler = new HttpClientHandler { CookieContainer = new CookieContainer(), UseCookies = true };
         if (!options.VerifyTls)
         {
@@ -41,7 +50,7 @@ public sealed class UnifiLegacySession : IDisposable
                 HttpClientHandler.DangerousAcceptAnyServerCertificateValidator;
         }
 
-        _http = new HttpClient(handler);
+        return handler;
     }
 
     /// <summary>

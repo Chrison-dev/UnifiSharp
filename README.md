@@ -126,6 +126,9 @@ With `UNIFI_LOCAL_HOST` alone the site URL is derived as
 > port-forward, a firewall group and a VLAN) are gated on *session* auth on purpose,
 > so a shell holding only an API key can never point them at a production gateway.
 > Read-only live checks (`UnifiLegacyReadOnlyLiveTests`) run in either mode.
+> `UnifiLegacyNetworkRawLiveTests` (a raw DHCP-DNS write on a scratch network, then a
+> byte-for-byte restore) is stricter still: it needs `UNIFI_LEGACY_BASE_URL` +
+> `UNIFI_USERNAME` + `UNIFI_PASSWORD` and **refuses** any host but localhost / 127.0.0.1 / ::1.
 
 ### Two surfaces, two sets of rules
 
@@ -142,6 +145,16 @@ That is why `UnifiStaticDnsRecord` is non-nullable throughout while the legacy D
 nullable: on v2 a partial is not something you can send, so the type should not suggest it.
 Static-DNS **wildcards are supported** and match arbitrary labels
 (`*.lab.example.com` answers `anything.lab.example.com`).
+
+**Networks are the exception on the legacy side.** `UnifiNetwork` models about a dozen of
+a live network's ~63 fields, so there is no typed network update. Change a network as raw
+JSON instead: read it, change named keys, put the whole object back.
+
+```csharp
+var net = await legacy.GetNetworkRawAsync(id);                      // throws unless exactly one row
+var dns = NetworkDhcpDns.Read(net);                                  // null = auto
+await legacy.ReplaceNetworkRawAsync(id, NetworkDhcpDns.With(net, ["10.20.0.53", "10.20.0.54"]));
+```
 
 ## Firewall policies (`UnifiSharp.Firewall`)
 
