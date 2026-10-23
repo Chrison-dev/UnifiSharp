@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 
 namespace UnifiSharp.Legacy;
@@ -72,6 +73,48 @@ public sealed class UnifiLegacyClient : IDisposable
 
     public Task DeleteNetworkAsync(string id, CancellationToken ct = default)
         => DeleteAsync("networkconf", id, ct);
+
+    // NOTE there is no UpdateNetworkAsync(UnifiNetwork), deliberately. UnifiNetwork models
+    // ~12 of a live network's ~63 fields and rest/networkconf/{id} is a full replacement,
+    // so a typed update would silently reset the rest. Updates go through the raw trio
+    // below: read the whole object, change named keys (e.g. NetworkDhcpDns.With), put it back.
+
+    /// <summary>Every network as the controller sent it — no field dropped, no number re-formatted.</summary>
+    public Task<IReadOnlyList<JsonObject>> ListNetworksRawAsync(CancellationToken ct = default)
+        => ListRawAsync("networkconf", ct);
+
+    /// <summary>
+    /// One network as the controller sent it. Throws unless the controller returns exactly
+    /// one row — zero or several is not "the" network, and a write built on it would be a guess.
+    /// </summary>
+    public async Task<JsonObject> GetNetworkRawAsync(string id, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(id);
+        using var resp = await _session.SendAsync(
+            HttpMethod.Get, $"rest/networkconf/{id}", content: null, ct).ConfigureAwait(false);
+        var rows = RawRows(await ReadEnvelopeAsync<JsonObject?>(resp, "networkconf", ct).ConfigureAwait(false), "networkconf");
+        return rows.Count == 1
+            ? rows[0]
+            : throw new UnifiLegacyException($"networkconf/{id}: expected exactly one network, got {rows.Count}");
+    }
+
+    /// <summary>
+    /// Replace a network wholesale with <paramref name="body"/>, sent verbatim. Pass an object
+    /// read by <see cref="GetNetworkRawAsync"/> and changed in place of named keys only; the
+    /// caller's object is not modified. Returns the controller's echo of the network, or a copy
+    /// of <paramref name="body"/> when the controller answers ok with no row — re-read to confirm.
+    /// </summary>
+    public async Task<JsonObject> ReplaceNetworkRawAsync(string id, JsonObject body, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(id);
+        ArgumentNullException.ThrowIfNull(body);
+        // ToJsonString writes parsed numbers from their original text, so 1.50 stays 1.50.
+        using var resp = await _session.SendAsync(
+            HttpMethod.Put, $"rest/networkconf/{id}", UnifiLegacySession.JsonBody(body.ToJsonString()), ct).ConfigureAwait(false);
+        var rows = RawRows(await ReadEnvelopeAsync<JsonObject?>(resp, "networkconf", ct).ConfigureAwait(false), "networkconf");
+        // Same echo-on-empty as UpdateAsync, but cloned so the caller's object stays theirs.
+        return rows.Count > 0 ? rows[0] : body.DeepClone().AsObject();
+    }
 
     // ── Known clients / DHCP reservations (rest/user) ─────────────────────────
     // NOTE there is no Delete here, deliberately. Removing a known client discards
@@ -170,6 +213,18 @@ public sealed class UnifiLegacyClient : IDisposable
         using var resp = await _session.SendAsync(HttpMethod.Get, $"rest/{resource}", content: null, ct).ConfigureAwait(false);
         return (await ReadEnvelopeAsync<T>(resp, resource, ct).ConfigureAwait(false)).Data;
     }
+
+    private async Task<IReadOnlyList<JsonObject>> ListRawAsync(string resource, CancellationToken ct)
+    {
+        using var resp = await _session.SendAsync(HttpMethod.Get, $"rest/{resource}", content: null, ct).ConfigureAwait(false);
+        return RawRows(await ReadEnvelopeAsync<JsonObject?>(resp, resource, ct).ConfigureAwait(false), resource);
+    }
+
+    // A null row is a shape we don't recognise, not an empty object — refuse it rather
+    // than hand back something a caller could write over a real network.
+    private static IReadOnlyList<JsonObject> RawRows(UnifiLegacyEnvelope<JsonObject?> env, string resource) =>
+        env.Data.Select(r => r ?? throw new UnifiLegacyException($"{resource}: response row is null"))
+            .ToList();
 
     private async Task<T> CreateAsync<T>(string resource, T spec, CancellationToken ct)
     {

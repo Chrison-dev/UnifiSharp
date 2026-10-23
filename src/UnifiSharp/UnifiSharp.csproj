@@ -23,4 +23,9 @@
     <ProjectReference Include="../UnifiSharp.Api/UnifiSharp.Api.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- Reaches UnifiLegacySession's handler seam; the public surface stays unchanged. -->
+    <InternalsVisibleTo Include="UnifiSharp.Tests" />
+  </ItemGroup>
+
 </Project>

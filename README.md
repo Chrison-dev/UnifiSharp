@@ -143,6 +143,16 @@ nullable: on v2 a partial is not something you can send, so the type should not 
 Static-DNS **wildcards are supported** and match arbitrary labels
 (`*.lab.example.com` answers `anything.lab.example.com`).
 
+**Networks are the exception on the legacy side.** `UnifiNetwork` models about a dozen of
+a live network's ~63 fields, so there is no typed network update. Change a network as raw
+JSON instead: read it, change named keys, put the whole object back.
+
+```csharp
+var net = await legacy.GetNetworkRawAsync(id);                      // throws unless exactly one row
+var dns = NetworkDhcpDns.Read(net);                                  // null = auto
+await legacy.ReplaceNetworkRawAsync(id, NetworkDhcpDns.With(net, ["10.20.0.53", "10.20.0.54"]));
+```
+
 ## Firewall policies (`UnifiSharp.Firewall`)
 
 Zone-based firewall policies (UniFi Network 9+) go through the **official** integration API,

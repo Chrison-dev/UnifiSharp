@@ -88,6 +88,21 @@ public class UnifiLegacyReadOnlyLiveTests : IClassFixture<LegacyReadOnlyFixture>
             Assert.False(string.IsNullOrEmpty(r.RecordType));
         });
     }
+
+    [SkippableFact]
+    public async Task Network_reads_raw_and_its_dhcp_dns_is_readable()
+    {
+        Skip.If(_fixture.Client is null, "No UniFi env — skipping live read test.");
+
+        // Read only: proves the raw path and the dhcpd_dns_N naming against a real controller.
+        var networks = await _fixture.Client!.ListNetworksRawAsync();
+        Assert.NotEmpty(networks);
+        var first = networks[0];
+        var net = await _fixture.Client.GetNetworkRawAsync((string)first["_id"]!);
+
+        Assert.Equal((string?)first["_id"], (string?)net["_id"]);
+        _ = NetworkDhcpDns.Read(net);   // null (auto) or a list — either way, no throw
+    }
 }
 
 public class UnifiLegacyLiveTests : IClassFixture<LegacyContainerFixture>
