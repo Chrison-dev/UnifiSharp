@@ -131,20 +131,25 @@ With `UNIFI_LOCAL_HOST` alone the site URL is derived as
 `UnifiLegacyLiveTests` (create and delete a port-forward, a firewall group and a VLAN) and
 `UnifiLegacyNetworkRawLiveTests` (a raw DHCP-DNS write on a scratch network, then a
 byte-for-byte restore) share `UnifiContainerFixture`: Testcontainers starts a UniFi OS
-Server (`hieutq/unifi-os-server`, the image and settings of the Homelab repo's
-`.containers/unifi/compose.yml`), runs first-run setup, logs in once, and removes the
+Server (`hieutq/unifi-os-server:5.0.8`, pinned by digest, with the settings of the Homelab
+repo's `.containers/unifi/compose.yml`), runs first-run setup, logs in once, and removes the
 container when the run ends. The URL comes from the container's mapped port, so these tests
 cannot reach a real console whatever the environment says.
 
 ```sh
 dotnet test                                  # starts the container when a runtime is reachable
-UNIFISHARP_SKIP_CONTAINER_TESTS=1 dotnet test   # skip them on purpose
+UNIFISHARP_SKIP_CONTAINER_TESTS=1 dotnet test   # skip them on purpose (1/true/yes)
 UNIFISHARP_CONTAINER_STARTUP_MINUTES=40 dotnet test   # slow link (default 20)
 ```
 
 - **Needs** a Docker-compatible runtime that allows `cgroup: host`, the `SYS_ADMIN` set of
   capabilities and a read-write `/sys/fs/cgroup` bind (OrbStack and Docker Desktop do).
   With no runtime reachable the tests **skip** and say why; any other startup failure fails.
+- **Local daemon only:** a `DOCKER_HOST` that is not a local socket or loopback address, or a
+  `TESTCONTAINERS_HOST_OVERRIDE` / `tc.host` that is not loopback, **fails** the tests rather
+  than start a `SYS_ADMIN` container elsewhere and send writes to it.
+- **The image is pinned** (Testcontainers only pulls a missing image, so a floating tag would
+  keep whatever was pulled first). Bump the tag and digest deliberately.
 - **First boot is slow:** every fresh container downloads Ubiquiti's installer (minutes).
 - It gets its own name (`unifisharp-tests-…`), a random host port and only port 443, so it
   runs beside a manually bootstrapped `unifi-os-server` container without touching it.

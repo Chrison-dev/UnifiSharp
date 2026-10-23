@@ -19,17 +19,24 @@ namespace UnifiSharp.Tests;
 /// <para>The client only ever points at this fixture's own container: the URL is built
 /// from the container's mapped port, never read from the environment. That is the whole
 /// safety argument for the write tests — no <c>UNIFI_*</c> variable can redirect them at a
-/// real console.</para>
+/// real console. For the same reason the fixture refuses a remote Docker daemon or a
+/// non-loopback host override: either would send the writes, and the privileged container,
+/// somewhere other than this machine.</para>
 /// <para>Skips (with the reason in <see cref="SkipReason"/>) when no container runtime is
-/// reachable or <c>UNIFISHARP_SKIP_CONTAINER_TESTS=1</c>. Any other startup failure —
-/// a timeout, a setup that never completes — is a failure, not a skip.</para>
+/// reachable or <c>UNIFISHARP_SKIP_CONTAINER_TESTS</c> is 1/true/yes. Any other startup
+/// failure — a timeout, a refused setup, a remote daemon — is a failure, not a skip.</para>
 /// </summary>
 public sealed class UnifiContainerFixture : IAsyncLifetime
 {
-    public const string Image = "hieutq/unifi-os-server:latest";
+    // Pinned by digest: Testcontainers only pulls an image that is missing, so a floating
+    // tag would silently keep whatever was pulled first. 5.0.8 is the build the Homelab
+    // compose container runs and the README's findings were verified against.
+    public const string Image = "hieutq/unifi-os-server:5.0.8@sha256:71393f7afc736e196eeb64a0a98b32a03e094a1f23008bfcfc48d28d2660ef24";
     public const string Username = "labadmin";
     public const string Password = "LabAdmin!2026";   // 8-64 chars (UniFi OS policy); throwaway, container-only
     public const string Label = "dev.chrison.unifisharp.tests";
+
+    private const string SkipVariable = "UNIFISHARP_SKIP_CONTAINER_TESTS";
 
     // First boot downloads Ubiquiti's installer into the fresh container, which takes
     // minutes on a good line. Generous on purpose; UNIFISHARP_CONTAINER_STARTUP_MINUTES
@@ -51,15 +58,16 @@ public sealed class UnifiContainerFixture : IAsyncLifetime
 
     public async Task InitializeAsync()
     {
-        if (Environment.GetEnvironmentVariable("UNIFISHARP_SKIP_CONTAINER_TESTS") == "1")
+        if (SkipRequested(Environment.GetEnvironmentVariable(SkipVariable)))
         {
-            SkipReason = "UNIFISHARP_SKIP_CONTAINER_TESTS=1 — skipping the UniFi container write tests.";
+            SkipReason = $"{SkipVariable} is set — skipping the UniFi container write tests.";
             return;
         }
 
         var timeout = StartupTimeout();
         using var cts = new CancellationTokenSource(timeout);
         var stopwatch = Stopwatch.StartNew();
+        var progress = new StartupProgress();
 
         try
         {
@@ -97,37 +105,49 @@ public sealed class UnifiContainerFixture : IAsyncLifetime
                     };
                 })
                 .Build();
-            await _container.StartAsync(cts.Token);
         }
         catch (DockerUnavailableException ex)
         {
-            // Thrown before anything is created, from Build() or StartAsync().
-            if (_container is not null)
-            {
-                await _container.DisposeAsync();
-                _container = null;
-            }
-
+            // Thrown from Build() when no endpoint is configured or reachable; nothing exists yet.
             SkipReason = $"No container runtime reachable — skipping the UniFi container write tests. ({ex.Message.Split('\n')[0]})";
             return;
         }
 
+        // Before anything privileged starts: the daemon, and any host override, must be local.
+        RefuseIfNotLocal(TestcontainersSettings.OS.DockerEndpointAuthConfig?.Endpoint, TestcontainersSettings.DockerHostOverride);
+
         try
         {
-            var root = new UriBuilder("https", _container.Hostname, _container.GetMappedPublicPort(443)).Uri;
-            await Bootstrap.RunAsync(root, cts.Token);
+            progress.Last = "starting the container";
+            await _container.StartAsync(cts.Token);
 
-            var session = new UnifiLegacySession(new UnifiLegacyOptions
+            // Hostname is what the client will talk to, so it gets the same check: Testcontainers
+            // derives it from the endpoint and the override, and that derivation is not ours.
+            RefuseIfNotLocal(TestcontainersSettings.OS.DockerEndpointAuthConfig?.Endpoint, _container.Hostname);
+
+            var root = new UriBuilder("https", _container.Hostname, _container.GetMappedPublicPort(443)).Uri;
+            await Bootstrap.RunAsync(root, progress, cts.Token);
+
+            var options = new UnifiLegacyOptions
             {
                 BaseUrl = new Uri(root, "/proxy/network/api/s/default"),
                 Username = Username,
                 Password = Password,
                 VerifyTls = false,   // the container serves a self-signed cert
-            });
+            };
+            // The session's handler backs off on a 429 from the login endpoint, which covers both
+            // the login below and the one the session repeats on a 401 mid-test.
+            var session = new UnifiLegacySession(options, new LoginBackoffHandler(new HttpClientHandler
+            {
+                CookieContainer = new CookieContainer(),
+                UseCookies = true,
+                ServerCertificateCustomValidationCallback = HttpClientHandler.DangerousAcceptAnyServerCertificateValidator,
+            }));
             _client = new UnifiLegacyClient(session, ownsSession: true);
 
             // One login for the whole run, so the tests never add to the login rate limit.
-            await Bootstrap.WithLoginBackoffAsync(() => session.LoginAsync(cts.Token), cts.Token);
+            progress.Last = "logging the shared session in";
+            await session.LoginAsync(cts.Token);
         }
         catch (Exception ex)
         {
@@ -140,7 +160,7 @@ public sealed class UnifiContainerFixture : IAsyncLifetime
             if (ex is OperationCanceledException && cts.IsCancellationRequested)
             {
                 throw new TimeoutException(
-                    $"UniFi OS container {name} was not ready within {timeout} " +
+                    $"UniFi OS container {name} was not ready within {timeout}; last status: {progress.Last} " +
                     "(first boot downloads the installer; raise UNIFISHARP_CONTAINER_STARTUP_MINUTES on a slow link).", ex);
             }
 
@@ -159,6 +179,71 @@ public sealed class UnifiContainerFixture : IAsyncLifetime
         }
     }
 
+    /// <summary>
+    /// Parses <c>UNIFISHARP_SKIP_CONTAINER_TESTS</c>: 1/true/yes skip, unset/0/false/no run,
+    /// anything else throws — a typo must not quietly decide whether the write tests run.
+    /// </summary>
+    internal static bool SkipRequested(string? value) => value?.Trim().ToLowerInvariant() switch
+    {
+        null or "" or "0" or "false" or "no" => false,
+        "1" or "true" or "yes" => true,
+        _ => throw new InvalidOperationException($"{SkipVariable} must be 1/true/yes or 0/false/no, got '{value}'."),
+    };
+
+    /// <summary>
+    /// Why the Docker endpoint or the host the tests will connect to is not this machine;
+    /// null when both are local. A socket or named pipe is a local daemon; a TCP/HTTP endpoint
+    /// and a host override must be loopback. An unknown endpoint is refused, not assumed local.
+    /// </summary>
+    internal static string? NonLocalDockerReason(Uri? endpoint, string? hostOverride)
+    {
+        if (endpoint is null)
+        {
+            return "the Docker endpoint could not be determined";
+        }
+
+        var localDaemon = endpoint.Scheme switch
+        {
+            "unix" or "npipe" => true,
+            "tcp" or "http" or "https" => IsLoopback(endpoint.Host),
+            _ => false,
+        };
+        if (!localDaemon)
+        {
+            return $"the Docker endpoint {endpoint.OriginalString} is not a local socket or a loopback address";
+        }
+
+        if (!string.IsNullOrEmpty(hostOverride) && !IsLoopback(hostOverride))
+        {
+            return $"the container host '{hostOverride}' (TESTCONTAINERS_HOST_OVERRIDE / tc.host, or derived from DOCKER_HOST) is not a loopback address";
+        }
+
+        return null;
+    }
+
+    private static bool IsLoopback(string host)
+    {
+        if (string.Equals(host, "localhost", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        // Uri.Host keeps IPv6 brackets ("[::1]"); IPAddress.TryParse does not want them.
+        return IPAddress.TryParse(host.Trim('[', ']'), out var address) && IPAddress.IsLoopback(address);
+    }
+
+    private static void RefuseIfNotLocal(Uri? endpoint, string? host)
+    {
+        if (NonLocalDockerReason(endpoint, host) is { } reason)
+        {
+            // A failure, not a skip: the run asked for these tests and something is pointing
+            // them away from this machine. The container runs with SYS_ADMIN and a rw cgroup mount.
+            throw new InvalidOperationException(
+                $"Refusing to run the UniFi container write tests: {reason}. They run only against a local Docker daemon; " +
+                $"set DOCKER_HOST to a local socket, or {SkipVariable}=1 to skip them.");
+        }
+    }
+
     private static TimeSpan StartupTimeout()
     {
         var raw = Environment.GetEnvironmentVariable("UNIFISHARP_CONTAINER_STARTUP_MINUTES");
@@ -173,6 +258,58 @@ public sealed class UnifiContainerFixture : IAsyncLifetime
             : throw new InvalidOperationException($"UNIFISHARP_CONTAINER_STARTUP_MINUTES must be a positive whole number of minutes, got '{raw}'.");
     }
 
+    /// <summary>What startup last saw, for the timeout message.</summary>
+    private sealed class StartupProgress
+    {
+        public string Last { get; set; } = "not started";
+    }
+
+    /// <summary>
+    /// The controller's login rate limit answers 429 for a while; one schedule for every
+    /// login the fixture makes, readiness probe and shared session alike.
+    /// </summary>
+    internal static class LoginBackoff
+    {
+        /// <summary>Attempts before a 429 is handed back to the caller.</summary>
+        public const int MaxAttempts = 6;
+
+        /// <summary>The wait after the <paramref name="attempt"/>-th consecutive 429 (1-based).</summary>
+        public static TimeSpan Delay(int attempt)
+        {
+            ArgumentOutOfRangeException.ThrowIfLessThan(attempt, 1);
+            var seconds = 15 * Math.Pow(2, Math.Min(attempt - 1, 4));
+            return TimeSpan.FromSeconds(Math.Min(seconds, 120));
+        }
+    }
+
+    /// <summary>
+    /// Retries <c>POST /api/auth/login</c> on 429 with <see cref="LoginBackoff"/>; every other
+    /// request passes straight through. After <see cref="LoginBackoff.MaxAttempts"/> the 429
+    /// goes back to the session, which reports it as a failed login.
+    /// </summary>
+    private sealed class LoginBackoffHandler(HttpMessageHandler inner) : DelegatingHandler(inner)
+    {
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+        {
+            if (request.Method != HttpMethod.Post || request.RequestUri?.AbsolutePath != "/api/auth/login")
+            {
+                return await base.SendAsync(request, ct);
+            }
+
+            for (var attempt = 1; ; attempt++)
+            {
+                var resp = await base.SendAsync(request, ct);
+                if (resp.StatusCode != HttpStatusCode.TooManyRequests || attempt == LoginBackoff.MaxAttempts)
+                {
+                    return resp;
+                }
+
+                resp.Dispose();
+                await Task.Delay(LoginBackoff.Delay(attempt), ct);
+            }
+        }
+    }
+
     /// <summary>
     /// bootstrap.sh's steps 1-3, against one controller root: wait for UniFi OS, run first-run
     /// setup, then wait until a legacy-API read answers 200.
@@ -181,95 +318,105 @@ public sealed class UnifiContainerFixture : IAsyncLifetime
     {
         private static readonly TimeSpan Poll = TimeSpan.FromSeconds(5);
 
-        public static async Task RunAsync(Uri root, CancellationToken ct)
+        public static async Task RunAsync(Uri root, StartupProgress progress, CancellationToken ct)
         {
             using var http = new HttpClient(new HttpClientHandler
             {
                 // Throwaway container, self-signed cert.
                 ServerCertificateCustomValidationCallback = HttpClientHandler.DangerousAcceptAnyServerCertificateValidator,
-                UseCookies = false,
+                // The readiness probe logs in once and keeps that session's cookie.
+                CookieContainer = new CookieContainer(),
+                UseCookies = true,
             })
             { Timeout = TimeSpan.FromSeconds(15) };
 
             // 1) UniFi OS answers /api/system with a deviceState once it is up.
-            await UntilAsync(async () =>
+            await UntilAsync(progress, "waiting for /api/system", async () =>
             {
                 var body = await http.GetStringAsync(new Uri(root, "/api/system"), ct);
+                progress.Last = "/api/system answered without a deviceState";
                 return body.Contains("\"deviceState\"", StringComparison.Ordinal);
             }, ct);
 
             // 2) First-run setup. A fresh container is never set up, but the setup endpoint
             //    answers 400/500 to an empty body only once it accepts input; until then it
             //    is not ready.
-            await UntilAsync(async () =>
+            await UntilAsync(progress, "waiting for /api/setup", async () =>
             {
                 using var probe = await http.PostAsJsonAsync(new Uri(root, "/api/setup"), new { }, ct);
+                progress.Last = $"/api/setup answered {(int)probe.StatusCode} to an empty body";
                 return probe.StatusCode is HttpStatusCode.BadRequest or HttpStatusCode.InternalServerError;
             }, ct);
             try
             {
-                using var _ = await http.PostAsJsonAsync(new Uri(root, "/api/setup"),
+                using var setup = await http.PostAsJsonAsync(new Uri(root, "/api/setup"),
                     new { name = "UnifiSharp test controller", username = Username, password = Password }, ct);
+                if (!setup.IsSuccessStatusCode)
+                {
+                    // An answer that says no is the reason, not something to wait out: without it
+                    // the login below would only ever report "not ready".
+                    var body = await setup.Content.ReadAsStringAsync(ct);
+                    throw new InvalidOperationException(
+                        $"UniFi OS first-run setup was refused ({(int)setup.StatusCode}): {(body.Length > 300 ? body[..300] : body)}");
+                }
+
+                progress.Last = $"setup accepted ({(int)setup.StatusCode})";
             }
-            catch (Exception ex) when (ex is HttpRequestException
-                || (ex is TaskCanceledException && !ct.IsCancellationRequested))
+            catch (HttpRequestException ex)
             {
-                // The connection often resets, or hangs until HttpClient.Timeout, while services
-                // restart after setup — expected.
+                // The connection often resets while services restart after setup — expected.
                 // Whether setup took is decided by the login below, not by this response.
+                progress.Last = $"setup sent, response lost ({ex.Message})";
+            }
+            catch (TaskCanceledException) when (!ct.IsCancellationRequested)
+            {
+                // Or it hangs until HttpClient.Timeout, for the same reason.
+                progress.Last = "setup sent, response timed out";
             }
 
-            // 3) The admin can log in and the legacy API answers. Its own token, not the
-            //    shared session's: this is a readiness probe, retried until it holds.
-            await UntilAsync(async () =>
+            // 3) The admin can log in and the legacy API answers. Its own session, not the
+            //    shared one's: logged in once and reused, re-logged-in only on a 401, and
+            //    backed off on a 429 so polling never feeds the login rate limit.
+            var loggedIn = false;
+            var rateLimited = 0;
+            await UntilAsync(progress, "waiting for the admin login and legacy API", async () =>
             {
-                using var login = await http.PostAsJsonAsync(new Uri(root, "/api/auth/login"),
-                    new { username = Username, password = Password }, ct);
-                if (login.StatusCode == HttpStatusCode.TooManyRequests)
+                if (!loggedIn)
                 {
-                    await Task.Delay(TimeSpan.FromSeconds(30), ct);
-                    return false;
+                    using var login = await http.PostAsJsonAsync(new Uri(root, "/api/auth/login"),
+                        new { username = Username, password = Password }, ct);
+                    if (login.StatusCode == HttpStatusCode.TooManyRequests)
+                    {
+                        var delay = LoginBackoff.Delay(++rateLimited);
+                        progress.Last = $"login answered 429 ({rateLimited} in a row); backing off {delay}";
+                        await Task.Delay(delay, ct);
+                        return false;
+                    }
+
+                    rateLimited = 0;
+                    if (!login.IsSuccessStatusCode)
+                    {
+                        progress.Last = $"login answered {(int)login.StatusCode}";
+                        return false;
+                    }
+
+                    loggedIn = true;
                 }
 
-                if (!login.IsSuccessStatusCode)
+                using var read = await http.GetAsync(new Uri(root, "/proxy/network/api/s/default/rest/portforward"), ct);
+                progress.Last = $"legacy read answered {(int)read.StatusCode}";
+                if (read.StatusCode == HttpStatusCode.Unauthorized)
                 {
-                    return false;
+                    loggedIn = false;   // session gone (services restarting); log in again next poll
                 }
 
-                using var read = new HttpRequestMessage(HttpMethod.Get, new Uri(root, "/proxy/network/api/s/default/rest/portforward"));
-                foreach (var cookie in login.Headers.TryGetValues("Set-Cookie", out var c) ? c : [])
-                {
-                    read.Headers.TryAddWithoutValidation("Cookie", cookie.Split(';')[0]);
-                }
-
-                using var resp = await http.SendAsync(read, ct);
-                return resp.StatusCode == HttpStatusCode.OK;
+                return read.StatusCode == HttpStatusCode.OK;
             }, ct);
         }
 
-        /// <summary>
-        /// Retry a session login while the controller answers 429. The library surfaces a
-        /// failed login as <see cref="UnifiLegacyException"/> carrying the status in its
-        /// message ("login failed (429): …"); anything other than 429 is rethrown.
-        /// </summary>
-        public static async Task WithLoginBackoffAsync(Func<Task> login, CancellationToken ct)
+        private static async Task UntilAsync(StartupProgress progress, string step, Func<Task<bool>> ready, CancellationToken ct)
         {
-            for (var delay = TimeSpan.FromSeconds(15); ; delay *= 2)
-            {
-                try
-                {
-                    await login();
-                    return;
-                }
-                catch (UnifiLegacyException ex) when (ex.Message.StartsWith("login failed (429)", StringComparison.Ordinal))
-                {
-                    await Task.Delay(delay, ct);
-                }
-            }
-        }
-
-        private static async Task UntilAsync(Func<Task<bool>> ready, CancellationToken ct)
-        {
+            progress.Last = step;
             while (true)
             {
                 try
@@ -279,13 +426,15 @@ public sealed class UnifiContainerFixture : IAsyncLifetime
                         return;
                     }
                 }
-                catch (HttpRequestException)
+                catch (HttpRequestException ex)
                 {
                     // Not listening yet, or restarting a service — keep polling.
+                    progress.Last = $"{step}: {ex.Message}";
                 }
                 catch (TaskCanceledException) when (!ct.IsCancellationRequested)
                 {
                     // A single request timed out (HttpClient.Timeout), not the overall deadline.
+                    progress.Last = $"{step}: request timed out";
                 }
 
                 await Task.Delay(Poll, ct);
