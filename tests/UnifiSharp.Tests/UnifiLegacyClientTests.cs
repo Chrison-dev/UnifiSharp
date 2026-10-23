@@ -410,6 +410,70 @@ public class UnifiLegacyClientTests
         Assert.Contains("api.err.InvalidPayload", ex.Message);
     }
 
+    [Theory]
+    [InlineData("""{ "_id": "net2", "name": "Other" }""")]
+    [InlineData("""{ "name": "no id" }""")]
+    [InlineData("""{ "_id": null }""")]
+    [InlineData("""{ "_id": 1 }""")]
+    public async Task ReplaceNetworkRaw_refuses_a_body_that_is_not_the_named_network(string json)
+    {
+        // A full replacement of net1 with net2's body would silently turn one network into another.
+        var handler = new FakeHandler(Envelope("[]"));
+        using var client = handler.Client();
+
+        await Assert.ThrowsAsync<ArgumentException>(
+            () => client.ReplaceNetworkRawAsync("net1", JsonNode.Parse(json)!.AsObject()));
+        Assert.Empty(handler.Requests);
+    }
+
+    [Theory]
+    [InlineData("a/../x")]
+    [InlineData("..")]
+    [InlineData(".")]
+    [InlineData("a?b=c")]
+    [InlineData("a#b")]
+    [InlineData("a%2Fb")]
+    [InlineData("a b")]
+    public async Task Raw_network_rejects_an_id_that_is_not_a_plain_path_segment(string id)
+    {
+        var handler = new FakeHandler(Envelope($"[{RawNetwork}]"));
+        using var client = handler.Client();
+        var body = JsonNode.Parse(RawNetwork)!.AsObject();
+        body["_id"] = id;
+
+        await Assert.ThrowsAsync<ArgumentException>(() => client.GetNetworkRawAsync(id));
+        await Assert.ThrowsAsync<ArgumentException>(() => client.ReplaceNetworkRawAsync(id, body));
+        Assert.Empty(handler.Requests);
+    }
+
+    [Theory]
+    [InlineData("""{ "meta": { "rc": "ok" }, "data": null }""")]
+    public async Task Raw_network_reports_a_null_data_array_as_an_api_shape_error(string response)
+    {
+        using var client = new FakeHandler(response).Client();
+
+        await Assert.ThrowsAsync<UnifiLegacyException>(() => client.GetNetworkRawAsync("net1"));
+        await Assert.ThrowsAsync<UnifiLegacyException>(() => client.ListNetworksRawAsync());
+        await Assert.ThrowsAsync<UnifiLegacyException>(
+            () => client.ReplaceNetworkRawAsync("net1", JsonNode.Parse(RawNetwork)!.AsObject()));
+    }
+
+    [Fact]
+    public async Task ReplaceNetworkRaw_sends_With_output_byte_for_byte()
+    {
+        // DeepEquals compares values, so it cannot see number text, key order or a dropped
+        // null; only the literal wire body can. Expected is RawNetwork minified by hand, with
+        // the two DNS slots changed in place.
+        var handler = new FakeHandler(Envelope("[]"));
+        using var client = handler.Client();
+
+        await client.ReplaceNetworkRawAsync("net1", NetworkDhcpDns.With(Raw(), ["10.20.0.53", "10.20.0.54"]));
+
+        const string expected =
+            """{"_id":"net1","name":"Consumer","purpose":"corporate","vlan":1010,"vlan_enabled":true,"dhcpd_dns_enabled":true,"dhcpd_dns_1":"10.20.0.53","dhcpd_dns_2":"10.20.0.54","dhcpd_dns_3":"","dhcpd_dns_4":"","dhcpd_leasetime":86400,"ratio":1.50,"big":1e3,"nothing":null,"nat_outbound_ip_addresses":[],"ipv6_ra_preferred_lifetime":14400,"dhcp_relay":{"servers":["10.0.0.1",null],"enabled":false},"some_future_field":{"nested":[1,{"deep":true}]}}""";
+        Assert.Equal(expected, Assert.Single(handler.Requests).Body);
+    }
+
     // ---- NetworkDhcpDns — the dhcpd_dns_N naming, kept out of every caller ----
 
     private static JsonObject Raw() => JsonNode.Parse(RawNetwork)!.AsObject();
@@ -503,6 +567,18 @@ public class UnifiLegacyClientTests
     {
         // A field present but shaped differently is unknown, not "auto" and not empty.
         Assert.Throws<UnifiLegacyException>(() => NetworkDhcpDns.Read(JsonNode.Parse(json)!.AsObject()));
+    }
+
+    [Theory]
+    [InlineData("""{ "dhcpd_dns_enabled": "yes" }""")]
+    [InlineData("""{ "dhcpd_dns_enabled": null }""")]
+    [InlineData("""{ "dhcpd_dns_enabled": true, "dhcpd_dns_1": 10 }""")]
+    [InlineData("""{ "dhcpd_dns_enabled": false, "dhcpd_dns_2": { "ip": "1.1.1.1" } }""")]
+    public void DhcpDns_With_throws_on_a_shape_it_does_not_recognise(string json)
+    {
+        // Overwriting a malformed key would paper over the very drift Read refuses to guess at.
+        Assert.Throws<UnifiLegacyException>(
+            () => NetworkDhcpDns.With(JsonNode.Parse(json)!.AsObject(), ["10.20.0.53"]));
     }
 
     // Records each request (body read eagerly — the client disposes it) and answers with a

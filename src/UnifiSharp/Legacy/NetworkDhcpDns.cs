@@ -34,12 +34,7 @@ public static class NetworkDhcpDns
             return null;
         }
 
-        if (enabled?.GetValueKind() is not (JsonValueKind.True or JsonValueKind.False))
-        {
-            throw new UnifiLegacyException($"{EnabledKey} is {Describe(enabled)}, expected a boolean");
-        }
-
-        if (!enabled.GetValue<bool>())
+        if (!ReadEnabled(enabled))
         {
             return null;
         }
@@ -53,12 +48,7 @@ public static class NetworkDhcpDns
                 continue;
             }
 
-            if (value?.GetValueKind() is not JsonValueKind.String)
-            {
-                throw new UnifiLegacyException($"{SlotKey(slot)} is {Describe(value)}, expected a string");
-            }
-
-            var server = value.GetValue<string>();
+            var server = ReadSlot(slot, value);
             if (!string.IsNullOrWhiteSpace(server))
             {
                 servers.Add(server);
@@ -77,6 +67,7 @@ public static class NetworkDhcpDns
     /// a cleared one). No other key is touched and the input is never mutated.
     /// </summary>
     /// <exception cref="ArgumentException">0 or more than <see cref="MaxServers"/> servers, or a blank entry.</exception>
+    /// <exception cref="UnifiLegacyException">A DNS key is present but not the shape <see cref="Read"/> accepts.</exception>
     public static JsonObject With(JsonObject network, IReadOnlyList<string> servers)
     {
         ArgumentNullException.ThrowIfNull(network);
@@ -95,6 +86,21 @@ public static class NetworkDhcpDns
             throw new ArgumentException("A DHCP DNS server cannot be blank.", nameof(servers));
         }
 
+        // Same checks as Read, slots included even when disabled: a key shaped differently means
+        // the API drifted, and overwriting it would hide that rather than report it.
+        if (network.TryGetPropertyValue(EnabledKey, out var enabled))
+        {
+            ReadEnabled(enabled);
+        }
+
+        for (var slot = 1; slot <= MaxServers; slot++)
+        {
+            if (network.TryGetPropertyValue(SlotKey(slot), out var value))
+            {
+                ReadSlot(slot, value);
+            }
+        }
+
         var copy = network.DeepClone().AsObject();
         copy[EnabledKey] = true;
         for (var slot = 1; slot <= MaxServers; slot++)
@@ -104,6 +110,16 @@ public static class NetworkDhcpDns
 
         return copy;
     }
+
+    private static bool ReadEnabled(JsonNode? enabled) =>
+        enabled?.GetValueKind() is JsonValueKind.True or JsonValueKind.False
+            ? enabled.GetValue<bool>()
+            : throw new UnifiLegacyException($"{EnabledKey} is {Describe(enabled)}, expected a boolean");
+
+    private static string ReadSlot(int slot, JsonNode? value) =>
+        value?.GetValueKind() is JsonValueKind.String
+            ? value.GetValue<string>()
+            : throw new UnifiLegacyException($"{SlotKey(slot)} is {Describe(value)}, expected a string");
 
     private static string Describe(JsonNode? node) =>
         node is null ? "null" : $"{node.GetValueKind()} {node.ToJsonString()}";

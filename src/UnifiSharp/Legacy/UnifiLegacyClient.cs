@@ -89,7 +89,7 @@ public sealed class UnifiLegacyClient : IDisposable
     /// </summary>
     public async Task<JsonObject> GetNetworkRawAsync(string id, CancellationToken ct = default)
     {
-        ArgumentException.ThrowIfNullOrEmpty(id);
+        ThrowUnlessPlainSegment(id);
         using var resp = await _session.SendAsync(
             HttpMethod.Get, $"rest/networkconf/{id}", content: null, ct).ConfigureAwait(false);
         var rows = RawRows(await ReadEnvelopeAsync<JsonObject?>(resp, "networkconf", ct).ConfigureAwait(false), "networkconf");
@@ -103,11 +103,27 @@ public sealed class UnifiLegacyClient : IDisposable
     /// read by <see cref="GetNetworkRawAsync"/> and changed in place of named keys only; the
     /// caller's object is not modified. Returns the controller's echo of the network, or a copy
     /// of <paramref name="body"/> when the controller answers ok with no row — re-read to confirm.
+    /// <para>"Verbatim" is per value, not per byte, for strings: numbers keep their original text
+    /// and keys their order, but a string is re-escaped on write, so <c>"caf\u00e9"</c> read in
+    /// may go out as <c>"café"</c> (same value, different bytes).</para>
     /// </summary>
+    /// <exception cref="ArgumentException"><paramref name="id"/> is not a plain path segment, or
+    /// <paramref name="body"/>'s <c>_id</c> is missing, not a string, or not <paramref name="id"/>.</exception>
     public async Task<JsonObject> ReplaceNetworkRawAsync(string id, JsonObject body, CancellationToken ct = default)
     {
-        ArgumentException.ThrowIfNullOrEmpty(id);
+        ThrowUnlessPlainSegment(id);
         ArgumentNullException.ThrowIfNull(body);
+        // The PUT replaces the network at {id} with whatever body says, so a body read from
+        // another network would silently overwrite this one with it. Missing counts as mismatch.
+        var bodyId = body.TryGetPropertyValue("_id", out var idNode) && idNode?.GetValueKind() is JsonValueKind.String
+            ? idNode.GetValue<string>()
+            : null;
+        if (bodyId != id)
+        {
+            throw new ArgumentException(
+                $"body._id is {(bodyId is null ? "missing or not a string" : $"'{bodyId}'")}, expected '{id}'.", nameof(body));
+        }
+
         // ToJsonString writes parsed numbers from their original text, so 1.50 stays 1.50.
         using var resp = await _session.SendAsync(
             HttpMethod.Put, $"rest/networkconf/{id}", UnifiLegacySession.JsonBody(body.ToJsonString()), ct).ConfigureAwait(false);
@@ -221,10 +237,23 @@ public sealed class UnifiLegacyClient : IDisposable
     }
 
     // A null row is a shape we don't recognise, not an empty object — refuse it rather
-    // than hand back something a caller could write over a real network.
+    // than hand back something a caller could write over a real network. Likewise "data":null:
+    // the deserializer leaves Data null despite its type, and that is not "no rows".
     private static IReadOnlyList<JsonObject> RawRows(UnifiLegacyEnvelope<JsonObject?> env, string resource) =>
-        env.Data.Select(r => r ?? throw new UnifiLegacyException($"{resource}: response row is null"))
+        (env.Data ?? throw new UnifiLegacyException($"{resource}: response data is null"))
+            .Select(r => r ?? throw new UnifiLegacyException($"{resource}: response row is null"))
             .ToList();
+
+    // The id is interpolated into the path, so "a/../x" or "a?b" would address something else.
+    // Controller ids are hex ObjectIds; anything percent-encoding would change is refused, not escaped.
+    private static void ThrowUnlessPlainSegment(string id, [System.Runtime.CompilerServices.CallerArgumentExpression(nameof(id))] string? paramName = null)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(id, paramName);
+        if (id is "." or ".." || Uri.EscapeDataString(id) != id)
+        {
+            throw new ArgumentException($"'{id}' is not a plain path segment.", paramName);
+        }
+    }
 
     private async Task<T> CreateAsync<T>(string resource, T spec, CancellationToken ct)
     {
