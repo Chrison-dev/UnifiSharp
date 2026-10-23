@@ -242,14 +242,24 @@ public class UnifiLegacyNetworkRawLiveTests
 
         try
         {
+            // Found by this test: the controller treats a PUT as a MERGE for omitted keys. A body
+            // without dhcpd_dns_enabled does not switch it off again, so "restore" cannot be done by
+            // replaying a body that lacks the key. Real LAN networks carry the key explicitly
+            // (dhcpd_dns_enabled=false), so the baseline is made explicit here, as on the live console.
+            var fresh = await client.GetNetworkRawAsync(id);
+            Assert.True(NetworkDhcpDns.Read(fresh) is null,
+                $"precondition: a new network should have DHCP DNS off (auto); dhcpd_dns_enabled is {fresh["dhcpd_dns_enabled"]?.ToJsonString() ?? "absent"}");
+            var explicitOff = Parse(fresh.ToJsonString());
+            explicitOff["dhcpd_dns_enabled"] = false;
+            for (var slot = 1; slot <= NetworkDhcpDns.MaxServers; slot++)
+                explicitOff[$"dhcpd_dns_{slot}"] = ""; // as on Consumer: all four keys present, blank when unused
+            await client.ReplaceNetworkRawAsync(id, explicitOff);
+
             // Kept as text so nothing below can mutate the baseline.
             var saved = (await client.GetNetworkRawAsync(id)).ToJsonString();
             var savedObj = Parse(saved);
-
-            // UnifiNetwork cannot express dhcpd_dns_enabled, so "DHCP DNS off" is the controller's
-            // create default — asserted, not assumed.
-            Assert.True(NetworkDhcpDns.Read(savedObj) is null,
-                $"precondition: a new network should have DHCP DNS off (auto); dhcpd_dns_enabled is {savedObj["dhcpd_dns_enabled"]?.ToJsonString() ?? "absent"}");
+            Assert.True(NetworkDhcpDns.Read(savedObj) is null && (bool?)savedObj["dhcpd_dns_enabled"] == false,
+                "precondition: the baseline carries dhcpd_dns_enabled=false explicitly");
 
             await client.ReplaceNetworkRawAsync(id, NetworkDhcpDns.With(Parse(saved), Servers));
             var changed = await client.GetNetworkRawAsync(id);
