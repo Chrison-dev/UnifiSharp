@@ -4,29 +4,17 @@ using Xunit;
 
 namespace UnifiSharp.Tests;
 
-// Live write round-trips against a UniFi controller — the .containers/unifi test
-// container (run ./bootstrap.sh, then `set -a && . ./credentials.env`). Every test
-// cleans up what it creates (add-only on the controller).
+// Live tests against a UniFi controller, in two groups with different targets:
 //
-// ⚠ These tests CREATE AND DELETE real objects — port-forwards, firewall groups and
-// a VLAN. They are gated on SESSION auth (UNIFI_USERNAME + UNIFI_PASSWORD) on purpose,
-// which is the only mode the test container offers. That gate is load-bearing: once
-// UnifiLegacyOptions learned API-key auth, a plain `secrets.env` (UNIFI_API_KEY +
-// UNIFI_LOCAL_HOST) started satisfying TryFromEnvironment — so keying these off
-// TryFromEnvironment alone would silently point them at the live home gateway and
-// create a VLAN on it. Read-only live checks use LegacyReadOnlyFixture instead.
-//
-// One shared session for the whole class (IClassFixture): the controller
-// rate-limits logins (HTTP 429), so we log in once and reuse the cookie.
+// • WRITE tests (UnifiLegacyLiveTests, UnifiLegacyNetworkRawLiveTests) CREATE AND DELETE
+//   real objects — port-forwards, firewall groups, VLANs, and a whole-network PUT. They
+//   run only against the throwaway container UnifiContainerFixture starts, and read no
+//   UNIFI_* variable at all: once UnifiLegacyOptions learned API-key auth, a plain
+//   `secrets.env` started satisfying TryFromEnvironment, so an env-gated write test could
+//   silently point at the live home gateway and create a VLAN on it. No env, no risk.
+// • READ-ONLY tests (UnifiLegacyReadOnlyLiveTests) use LegacyReadOnlyFixture, which does
+//   take its controller from the environment — safe to point at a real gateway.
 #pragma warning disable CS0618 // UnifiLegacyClient is intentionally obsolete (ADR-0003)
-
-public sealed class LegacyContainerFixture : IDisposable
-{
-    public UnifiLegacyClient? Client { get; } =
-        UnifiLegacyOptions.TryFromEnvironment() is { UsesApiKey: false } o ? new UnifiLegacyClient(o) : null;
-
-    public void Dispose() => Client?.Dispose();
-}
 
 /// <summary>
 /// Any configured controller, in either auth mode — for checks that only READ.
@@ -106,18 +94,19 @@ public class UnifiLegacyReadOnlyLiveTests : IClassFixture<LegacyReadOnlyFixture>
     }
 }
 
-public class UnifiLegacyLiveTests : IClassFixture<LegacyContainerFixture>
+[Collection(UnifiContainerCollection.Name)]
+public class UnifiLegacyLiveTests
 {
-    private readonly UnifiLegacyClient? _client;
-    public UnifiLegacyLiveTests(LegacyContainerFixture fixture) => _client = fixture.Client;
+    private readonly UnifiContainerFixture _fixture;
+    public UnifiLegacyLiveTests(UnifiContainerFixture fixture) => _fixture = fixture;
 
     [SkippableFact]
     public async Task PortForward_create_list_delete_roundtrip()
     {
-        var client = _client;
-        Skip.If(client is null, "No UNIFI_LEGACY_* env — skipping live legacy write test.");
+        Skip.If(_fixture.SkipReason is not null, _fixture.SkipReason);
+        var client = _fixture.Client;
 
-        var created = await client!.CreatePortForwardAsync(new UnifiPortForward
+        var created = await client.CreatePortForwardAsync(new UnifiPortForward
         {
             Name = "unifisharp-test-pf",
             Enabled = true,
@@ -150,10 +139,10 @@ public class UnifiLegacyLiveTests : IClassFixture<LegacyContainerFixture>
     [SkippableFact]
     public async Task FirewallGroup_create_delete_roundtrip()
     {
-        var client = _client;
-        Skip.If(client is null, "No UNIFI_LEGACY_* env — skipping live legacy write test.");
+        Skip.If(_fixture.SkipReason is not null, _fixture.SkipReason);
+        var client = _fixture.Client;
 
-        var created = await client!.CreateFirewallGroupAsync(new UnifiFirewallGroup
+        var created = await client.CreateFirewallGroupAsync(new UnifiFirewallGroup
         {
             Name = "unifisharp-test-grp",
             GroupType = "port-group",
@@ -167,10 +156,10 @@ public class UnifiLegacyLiveTests : IClassFixture<LegacyContainerFixture>
     [SkippableFact]
     public async Task Network_create_delete_roundtrip()
     {
-        var client = _client;
-        Skip.If(client is null, "No UNIFI_LEGACY_* env — skipping live legacy write test.");
+        Skip.If(_fixture.SkipReason is not null, _fixture.SkipReason);
+        var client = _fixture.Client;
 
-        var created = await client!.CreateNetworkAsync(new UnifiNetwork
+        var created = await client.CreateNetworkAsync(new UnifiNetwork
         {
             Name = "unifisharp-test-vlan",
             Purpose = "corporate",
@@ -188,12 +177,16 @@ public class UnifiLegacyLiveTests : IClassFixture<LegacyContainerFixture>
 /// <summary>
 /// Proves a field-scoped raw network write is reversible: setting DHCP DNS touches only the
 /// DNS keys, and putting back the saved object restores the network exactly.
-/// <para>Stricter gate than <see cref="UnifiLegacyLiveTests"/>: this PUTs over a whole network,
-/// so it runs only against a controller on this machine. Missing env skips; an env pointing
-/// anywhere else is refused (fails) before any login, never quietly skipped.</para>
+/// <para>Runs against <see cref="UnifiContainerFixture"/>'s container, in the same collection as
+/// the other write tests so none of them runs alongside it: it asserts every OTHER network is
+/// untouched afterwards.</para>
 /// </summary>
+[Collection(UnifiContainerCollection.Name)]
 public class UnifiLegacyNetworkRawLiveTests
 {
+    private readonly UnifiContainerFixture _fixture;
+    public UnifiLegacyNetworkRawLiveTests(UnifiContainerFixture fixture) => _fixture = fixture;
+
     private static readonly string[] Servers = ["10.20.0.53", "10.20.0.54"];
 
     private static readonly HashSet<string> DnsKeys =
@@ -207,21 +200,8 @@ public class UnifiLegacyNetworkRawLiveTests
     [SkippableFact]
     public async Task Network_dhcp_dns_write_is_reversible_byte_for_byte()
     {
-        var baseUrl = Environment.GetEnvironmentVariable("UNIFI_LEGACY_BASE_URL");
-        Skip.If(
-            string.IsNullOrEmpty(baseUrl)
-            || string.IsNullOrEmpty(Environment.GetEnvironmentVariable("UNIFI_USERNAME"))
-            || string.IsNullOrEmpty(Environment.GetEnvironmentVariable("UNIFI_PASSWORD")),
-            "UNIFI_LEGACY_BASE_URL + UNIFI_USERNAME + UNIFI_PASSWORD not all set — skipping local write test.");
-
-        // Check the URL the client will actually use, not just the variable: TryFromEnvironment
-        // is what resolves it, and it is the one that has to be local.
-        var options = UnifiLegacyOptions.TryFromEnvironment()
-            ?? throw new InvalidOperationException("UNIFI_* env is set but did not resolve to legacy options.");
-        RefuseUnlessLocal(new Uri(baseUrl!));
-        RefuseUnlessLocal(options.BaseUrl);
-
-        using var client = new UnifiLegacyClient(options);
+        Skip.If(_fixture.SkipReason is not null, _fixture.SkipReason);
+        var client = _fixture.Client;
 
         var before = await client.ListNetworksRawAsync();
         var (vlan, octet) = PickUnusedVlanAndSubnet(before);
@@ -287,16 +267,6 @@ public class UnifiLegacyNetworkRawLiveTests
         foreach (var (otherId, was) in beforeById)
         {
             AssertSameKeys(was, afterById[otherId], ignore: [], what: $"network {otherId} ('{was["name"]}') changed: key");
-        }
-    }
-
-    private static void RefuseUnlessLocal(Uri url)
-    {
-        // Uri.Host lower-cases names and brackets IPv6, so ::1 arrives as "[::1]".
-        if (url.Host is not ("localhost" or "127.0.0.1" or "[::1]"))
-        {
-            throw new InvalidOperationException(
-                $"Refusing to write networks on {url.Host}: this test only runs against a controller on localhost / 127.0.0.1 / ::1.");
         }
     }
 
