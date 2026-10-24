@@ -122,13 +122,43 @@ unifisharp clients     # connected clients per site (name, type, ip, connectedAt
 With `UNIFI_LOCAL_HOST` alone the site URL is derived as
 `https://<host>/proxy/network/api/s/default`.
 
-> The **destructive** live tests (`UnifiLegacyLiveTests` — they create and delete a
-> port-forward, a firewall group and a VLAN) are gated on *session* auth on purpose,
-> so a shell holding only an API key can never point them at a production gateway.
-> Read-only live checks (`UnifiLegacyReadOnlyLiveTests`) run in either mode.
-> `UnifiLegacyNetworkRawLiveTests` (a raw DHCP-DNS write on a scratch network, then a
-> byte-for-byte restore) is stricter still: it needs `UNIFI_LEGACY_BASE_URL` +
-> `UNIFI_USERNAME` + `UNIFI_PASSWORD` and **refuses** any host but localhost / 127.0.0.1 / ::1.
+> The **destructive** live tests never read `UNIFI_*`; they run only against a throwaway
+> container the tests start themselves (below). Read-only live checks
+> (`UnifiLegacyReadOnlyLiveTests`) take their controller from the environment, in either mode.
+
+### Write tests run against their own container
+
+`UnifiLegacyLiveTests` (create and delete a port-forward, a firewall group and a VLAN) and
+`UnifiLegacyNetworkRawLiveTests` (a raw DHCP-DNS write on a scratch network, then a
+byte-for-byte restore) share `UnifiContainerFixture`: Testcontainers starts a UniFi OS
+Server (`hieutq/unifi-os-server:5.0.8`, pinned by digest, with the settings of the Homelab
+repo's `.containers/unifi/compose.yml`), runs first-run setup, logs in once, and removes the
+container when the run ends. The URL comes from the container's mapped port, so these tests
+cannot reach a real console whatever the environment says.
+
+```sh
+dotnet test                                  # starts the container when a runtime is reachable
+UNIFISHARP_SKIP_CONTAINER_TESTS=1 dotnet test   # skip them on purpose (1/true/yes)
+UNIFISHARP_CONTAINER_STARTUP_MINUTES=40 dotnet test   # slow link (default 20)
+```
+
+- **Needs** a Docker-compatible runtime that allows `cgroup: host`, the `SYS_ADMIN` set of
+  capabilities and a read-write `/sys/fs/cgroup` bind (OrbStack and Docker Desktop do).
+  With no runtime reachable the tests **skip** and say why; any other startup failure fails.
+- **Local daemon only:** a `DOCKER_HOST` that is not a local socket or loopback address, or a
+  `TESTCONTAINERS_HOST_OVERRIDE` / `tc.host` that is not loopback, **fails** the tests rather
+  than start a `SYS_ADMIN` container elsewhere and send writes to it.
+- **The image is pinned** (Testcontainers only pulls a missing image, so a floating tag would
+  keep whatever was pulled first). Bump the tag and digest deliberately.
+- **First boot is slow:** every fresh container downloads Ubiquiti's installer (minutes).
+- It gets its own name (`unifisharp-tests-…`), a random host port and only port 443, so it
+  runs beside a manually bootstrapped `unifi-os-server` container without touching it.
+- Testcontainers finds the runtime through `DOCKER_HOST`, `~/.testcontainers.properties` or
+  the Docker context. A stale `tc.host` / `docker.host` in that properties file (say, from
+  an uninstalled Testcontainers Desktop) makes the tests skip;
+  `DOCKER_HOST=unix://$HOME/.orbstack/run/docker.sock` overrides it for OrbStack.
+- **CI is untested.** A runner needs a privileged-enough Docker daemon and network access to
+  Ubiquiti's download servers; budget for the installer download on every run.
 
 ### Two surfaces, two sets of rules
 
@@ -190,5 +220,5 @@ await fw.CreateAsync(spec, names);
 Read client + `discover` + `unifisharp` CLI building from the 10.4.57 spec.
 Live read tests skip without `UNIFI_*` — run them against the
 [`.containers/unifi`](https://github.com/Chrison-dev/Homelab/tree/main/.containers/unifi)
-test controller (never the live network). **Next:** the legacy write adapter
+test controller (never the live network). Legacy write tests start their own container. **Next:** the legacy write adapter
 (firewall rules / port profiles) once verified against the container.
