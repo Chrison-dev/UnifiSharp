@@ -101,6 +101,18 @@ public class UnifiLegacyLiveTests
     public UnifiLegacyLiveTests(UnifiContainerFixture fixture) => _fixture = fixture;
 
     [SkippableFact]
+    public async Task Nat_list_reaches_the_v2_endpoint_and_names_come_from_the_networks()
+    {
+        // The container has no gateway behind it, so it accepts no NAT rule (POST is a bare 500):
+        // the write path is covered by UnifiNatRuleTests against the shape the UCG returns.
+        Skip.If(_fixture.SkipReason is not null, _fixture.SkipReason);
+        var client = _fixture.Client;
+
+        Assert.NotNull(await client.ListNatRulesAsync());
+        Assert.NotEmpty((await client.GetNatNamesAsync()).NetworkIds);
+    }
+
+    [SkippableFact]
     public async Task PortForward_create_list_delete_roundtrip()
     {
         Skip.If(_fixture.SkipReason is not null, _fixture.SkipReason);
