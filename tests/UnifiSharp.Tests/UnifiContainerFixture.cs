@@ -29,9 +29,10 @@ namespace UnifiSharp.Tests;
 public sealed class UnifiContainerFixture : IAsyncLifetime
 {
     // Pinned by digest: Testcontainers only pulls an image that is missing, so a floating
-    // tag would silently keep whatever was pulled first. 5.0.8 is the build the Homelab
-    // compose container runs and the README's findings were verified against.
-    public const string Image = "hieutq/unifi-os-server:5.0.8@sha256:71393f7afc736e196eeb64a0a98b32a03e094a1f23008bfcfc48d28d2660ef24";
+    // tag would silently keep whatever was pulled first. 5.1.42 is the current build; 5.0.8
+    // (sha256:71393f7a…) is what the Homelab compose container ran when the README's findings
+    // were first verified.
+    public const string Image = "hieutq/unifi-os-server:5.1.42@sha256:20cffff82df73b45d13fbb2dc21d4743e675f3d23516084fe849474115830d15";
     public const string Username = "labadmin";
     public const string Password = "LabAdmin!2026";   // 8-64 chars (UniFi OS policy); throwaway, container-only
     public const string Label = "dev.chrison.unifisharp.tests";
@@ -81,6 +82,12 @@ public sealed class UnifiContainerFixture : IAsyncLifetime
                 // real device adoption and would collide with the compose container.
                 .WithPortBinding(443, assignRandomHostPort: true)
                 .WithBindMount("/sys/fs/cgroup", "/sys/fs/cgroup", AccessMode.ReadWrite)
+                // 5.1.x's /entrypoint.sh never writes these two files (the vendor's own
+                // uos-entrypoint.sh does, from APP_MODEL/PRODUCT_NAME, but nothing runs it here).
+                // Without them `ubnt-tools id` reports an empty model, unifi-core dies with
+                // "Unsupported console model" and ulp-go exits with "no device info found".
+                .WithResourceMapping(System.Text.Encoding.ASCII.GetBytes("UOSSERVER\n"), "/usr/lib/app_model")
+                .WithResourceMapping(System.Text.Encoding.ASCII.GetBytes("uosserver\n"), "/usr/lib/product_name")
                 .WithCreateParameterModifier(p =>
                 {
                     // compose.yml's `cgroup: host`, cap set and tmpfs mounts: UniFi OS Server runs
@@ -93,7 +100,7 @@ public sealed class UnifiContainerFixture : IAsyncLifetime
                     [
                         "SYS_ADMIN", "NET_ADMIN", "NET_RAW", "NET_BIND_SERVICE", "DAC_OVERRIDE",
                         "DAC_READ_SEARCH", "FOWNER", "CHOWN", "SETUID", "SETGID", "KILL",
-                        "SYS_CHROOT", "SYS_PTRACE", "SYS_RESOURCE", "AUDIT_WRITE", "MKNOD",
+                        "SYS_CHROOT", "SYS_PTRACE", "SYS_RESOURCE", "AUDIT_WRITE", "MKNOD", "SETPCAP",
                     ];
                     host.Tmpfs = new Dictionary<string, string>
                     {
