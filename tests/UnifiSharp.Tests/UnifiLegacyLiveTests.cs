@@ -50,6 +50,23 @@ public class UnifiLegacyReadOnlyLiveTests : IClassFixture<LegacyReadOnlyFixture>
     }
 
     [SkippableFact]
+    public async Task Every_live_nat_rule_maps_to_a_spec_and_back_unchanged()
+    {
+        Skip.If(_fixture.Client is null, "No UniFi env — skipping live read test.");
+        Skip.IfNot(_fixture.UsesApiKey, "Not in API-key mode — this test covers the X-API-KEY path.");
+
+        var names = await _fixture.Client!.GetNatNamesAsync();
+        foreach (var rule in await _fixture.Client.ListNatRulesAsync())
+        {
+            // Predefined rules are the gateway's own and may use shapes this library refuses.
+            if (rule.IsPredefined) continue;
+            var back = UnifiNatRuleJson.ToJson(UnifiNatRuleJson.FromJson(rule.Raw, names), names);
+            foreach (var (key, value) in back)
+                Assert.True(JsonNode.DeepEquals(value, rule.Raw[key]), $"'{rule.Name}': {key} differs after a round trip");
+        }
+    }
+
+    [SkippableFact]
     public async Task ApiKey_auth_can_read_known_clients_and_their_reservations()
     {
         Skip.If(_fixture.Client is null, "No UniFi env — skipping live read test.");
