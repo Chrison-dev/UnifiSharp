@@ -93,7 +93,8 @@ public sealed class UnifiLegacySession : IDisposable
             await LoginAsync(ct).ConfigureAwait(false);
         }
 
-        var resp = await SendOnceAsync(method, relativePath, content, ct).ConfigureAwait(false);
+        var body = await Body.CaptureAsync(content, ct).ConfigureAwait(false);
+        var resp = await SendOnceAsync(method, relativePath, body.Fresh(), ct).ConfigureAwait(false);
 
         // Re-auth-and-retry only makes sense for a session that can expire. In API-key
         // mode a 401 means the key is wrong or unprivileged, and retrying would just
@@ -102,7 +103,7 @@ public sealed class UnifiLegacySession : IDisposable
         {
             resp.Dispose();
             await LoginAsync(ct).ConfigureAwait(false);
-            resp = await SendOnceAsync(method, relativePath, content, ct).ConfigureAwait(false);
+            resp = await SendOnceAsync(method, relativePath, body.Fresh(), ct).ConfigureAwait(false);
         }
 
         return resp;
@@ -121,12 +122,13 @@ public sealed class UnifiLegacySession : IDisposable
             await LoginAsync(ct).ConfigureAwait(false);
         }
 
-        var resp = await SendOnceAsync(method, url, content, ct).ConfigureAwait(false);
+        var body = await Body.CaptureAsync(content, ct).ConfigureAwait(false);
+        var resp = await SendOnceAsync(method, url, body.Fresh(), ct).ConfigureAwait(false);
         if (resp.StatusCode == HttpStatusCode.Unauthorized && !_options.UsesApiKey)
         {
             resp.Dispose();
             await LoginAsync(ct).ConfigureAwait(false);
-            resp = await SendOnceAsync(method, url, content, ct).ConfigureAwait(false);
+            resp = await SendOnceAsync(method, url, body.Fresh(), ct).ConfigureAwait(false);
         }
 
         return resp;
@@ -174,6 +176,49 @@ public sealed class UnifiLegacySession : IDisposable
         else if (resp.Headers.TryGetValues("x-csrf-token", out var current))
         {
             _csrfToken = current.FirstOrDefault() ?? _csrfToken;
+        }
+    }
+
+    // SendOnceAsync disposes its request, and with it the content, so a retry after the
+    // re-login cannot reuse the caller's HttpContent. Read the bytes and headers once and
+    // build a fresh content per attempt.
+    private sealed class Body
+    {
+        private byte[]? _bytes;
+        private List<KeyValuePair<string, string[]>> _headers = [];
+
+        public static async Task<Body> CaptureAsync(HttpContent? content, CancellationToken ct)
+        {
+            var b = new Body();
+            if (content is null)
+            {
+                return b;
+            }
+
+            using (content)
+            {
+                b._bytes = await content.ReadAsByteArrayAsync(ct).ConfigureAwait(false);
+                b._headers = content.Headers.Select(h => KeyValuePair.Create(h.Key, h.Value.ToArray())).ToList();
+            }
+
+            return b;
+        }
+
+        public HttpContent? Fresh()
+        {
+            if (_bytes is null)
+            {
+                return null;
+            }
+
+            var c = new ByteArrayContent(_bytes);
+            c.Headers.Clear();
+            foreach (var (name, values) in _headers)
+            {
+                c.Headers.TryAddWithoutValidation(name, values);
+            }
+
+            return c;
         }
     }
 
