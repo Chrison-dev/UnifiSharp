@@ -50,6 +50,23 @@ public class UnifiLegacyReadOnlyLiveTests : IClassFixture<LegacyReadOnlyFixture>
     }
 
     [SkippableFact]
+    public async Task Every_live_nat_rule_maps_to_a_spec_and_back_unchanged()
+    {
+        Skip.If(_fixture.Client is null, "No UniFi env — skipping live read test.");
+        Skip.IfNot(_fixture.UsesApiKey, "Not in API-key mode — this test covers the X-API-KEY path.");
+
+        var names = await _fixture.Client!.GetNatNamesAsync();
+        foreach (var rule in await _fixture.Client.ListNatRulesAsync())
+        {
+            // Predefined rules are the gateway's own and may use shapes this library refuses.
+            if (rule.IsPredefined) continue;
+            var back = UnifiNatRuleJson.ToJson(UnifiNatRuleJson.FromJson(rule.Raw, names), names);
+            foreach (var (key, value) in back)
+                Assert.True(JsonNode.DeepEquals(value, rule.Raw[key]), $"'{rule.Name}': {key} differs after a round trip");
+        }
+    }
+
+    [SkippableFact]
     public async Task ApiKey_auth_can_read_known_clients_and_their_reservations()
     {
         Skip.If(_fixture.Client is null, "No UniFi env — skipping live read test.");
@@ -99,6 +116,18 @@ public class UnifiLegacyLiveTests
 {
     private readonly UnifiContainerFixture _fixture;
     public UnifiLegacyLiveTests(UnifiContainerFixture fixture) => _fixture = fixture;
+
+    [SkippableFact]
+    public async Task Nat_list_reaches_the_v2_endpoint_and_names_come_from_the_networks()
+    {
+        // The container has no gateway behind it, so it accepts no NAT rule (POST is a bare 500):
+        // the write path is covered by UnifiNatRuleTests against the shape the UCG returns.
+        Skip.If(_fixture.SkipReason is not null, _fixture.SkipReason);
+        var client = _fixture.Client;
+
+        Assert.NotNull(await client.ListNatRulesAsync());
+        Assert.NotEmpty((await client.GetNatNamesAsync()).NetworkIds);
+    }
 
     [SkippableFact]
     public async Task PortForward_create_list_delete_roundtrip()

@@ -186,6 +186,27 @@ var dns = NetworkDhcpDns.Read(net);                                  // null = a
 await legacy.ReplaceNetworkRawAsync(id, NetworkDhcpDns.With(net, ["10.20.0.53", "10.20.0.54"]));
 ```
 
+**Custom NAT rules** (DNAT, MASQUERADE, SNAT) are on the v2 side too (`…/v2/api/site/<site>/nat`),
+so the update is a full replacement. A rule has no name, so `UnifiNatRuleSpec.Name` is its
+`description`, and callers reconcile by it. `in_interface` / `out_interface` are network
+`_id`s; the spec takes network names and `GetNatNamesAsync` resolves them. The controller
+rejects a duplicate `rule_index`, so `CreateNatRuleAsync` takes the next free one unless the spec
+declares it. `UpdateNatRuleAsync` and `DeleteNatRuleAsync` refuse predefined rules and ids that
+aren't on the controller. A filter matches one address, range or CIDR, with `InvertAddress` for
+"everything except". The shape comes from the UCG (Network 10.6.106); a throwaway container has
+no gateway and takes no NAT rule, so writes are unit-tested rather than container-tested.
+
+```csharp
+var names = await legacy.GetNatNamesAsync();
+await legacy.CreateNatRuleAsync(new UnifiNatRuleSpec
+{
+    Name = "consumer-dns-redirect", Type = UnifiNatType.Dnat, Protocol = "tcp_udp",
+    InNetwork = "Consumer", TranslatedAddress = "10.20.0.53", TranslatedPort = "53",
+    Source = new() { Address = "10.20.0.53-10.20.0.54", InvertAddress = true },
+    Destination = new() { Address = "10.20.0.53-10.20.0.54", Port = "53", InvertAddress = true },
+}, names);
+```
+
 ## Firewall policies (`UnifiSharp.Firewall`)
 
 Zone-based firewall policies (UniFi Network 9+) go through the **official** integration API,

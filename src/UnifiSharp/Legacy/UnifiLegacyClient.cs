@@ -191,6 +191,92 @@ public sealed class UnifiLegacyClient : IDisposable
         await ReadV2Async<JsonElement?>(resp, "static-dns", ct).ConfigureAwait(false);   // throws on failure
     }
 
+    // ── Custom NAT rules (v2 site API: nat) ───────────────────────────────────
+    // Same surface as static-dns: bare JSON, full-replacement PUT. The controller rejects a
+    // duplicate rule_index (400 NatRuleInvalidParameters) and stores null for a missing one,
+    // so Create picks the next free index when the spec leaves it open (past every rule's,
+    // predefined included; two concurrent creates can still collide and the second gets the 400).
+    // Predefined rules are the gateway's own: Update and Delete refuse them.
+
+    public async Task<IReadOnlyList<UnifiLiveNatRule>> ListNatRulesAsync(CancellationToken ct = default)
+    {
+        using var resp = await _session.SendAbsoluteAsync(HttpMethod.Get, NatUrl(), null, ct).ConfigureAwait(false);
+        var rows = await ReadV2Async<IReadOnlyList<JsonObject?>>(resp, "nat", ct).ConfigureAwait(false) ?? [];
+        return rows.Select(ParseNat).ToList();
+    }
+
+    /// <summary>Network name → <c>_id</c>, the form <c>in_interface</c> / <c>out_interface</c> take.</summary>
+    public async Task<UnifiNatNames> GetNatNamesAsync(CancellationToken ct = default)
+    {
+        var nets = await ListNetworksAsync(ct).ConfigureAwait(false);
+        return new UnifiNatNames(nets.Where(n => n.Name is not null && n.Id is not null)
+            .GroupBy(n => n.Name!, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key, g => g.First().Id!, StringComparer.OrdinalIgnoreCase));
+    }
+
+    public async Task<UnifiLiveNatRule> CreateNatRuleAsync(UnifiNatRuleSpec spec, UnifiNatNames names, CancellationToken ct = default)
+    {
+        var body = UnifiNatRuleJson.ToJson(spec, names);
+        if (spec.RuleIndex is null)
+        {
+            var live = await ListNatRulesAsync(ct).ConfigureAwait(false);
+            body["rule_index"] = live.Select(r => r.Raw["rule_index"] is { } n ? n.GetValue<int>() : 0).DefaultIfEmpty(0).Max() + 1;
+        }
+
+        using var resp = await _session.SendAbsoluteAsync(HttpMethod.Post, NatUrl(), UnifiLegacySession.JsonBody(body.ToJsonString()), ct).ConfigureAwait(false);
+        return ParseNat(await ReadV2Async<JsonObject>(resp, "nat", ct).ConfigureAwait(false)
+                        ?? throw new UnifiLegacyException("create nat: ok but no object returned"));
+    }
+
+    /// <summary>Replace a rule wholesale. Pass the full desired state, including its RuleIndex.</summary>
+    public async Task<UnifiLiveNatRule> UpdateNatRuleAsync(string id, UnifiNatRuleSpec spec, UnifiNatNames names, CancellationToken ct = default)
+    {
+        var live = await RequireUserNatRuleAsync(id, "update", ct).ConfigureAwait(false);
+        var body = UnifiNatRuleJson.ToJson(spec, names);
+        body["_id"] = id;
+        // A PUT replaces the whole rule, so an omitted rule_index would be stored as null.
+        if (spec.RuleIndex is null && live.Raw["rule_index"] is { } keep) body["rule_index"] = keep.DeepClone();
+        using var resp = await _session.SendAbsoluteAsync(HttpMethod.Put, NatUrl(id), UnifiLegacySession.JsonBody(body.ToJsonString()), ct).ConfigureAwait(false);
+        return ParseNat(await ReadV2Async<JsonObject>(resp, "nat", ct).ConfigureAwait(false) ?? body);
+    }
+
+    public async Task DeleteNatRuleAsync(string id, CancellationToken ct = default)
+    {
+        await RequireUserNatRuleAsync(id, "delete", ct).ConfigureAwait(false);
+        using var resp = await _session.SendAbsoluteAsync(HttpMethod.Delete, NatUrl(id), null, ct).ConfigureAwait(false);
+        await ReadV2Async<JsonElement?>(resp, "nat", ct).ConfigureAwait(false);   // throws on failure
+    }
+
+    // Fresh read, not a cached list: the guard must see the rule as it is now.
+    private async Task<UnifiLiveNatRule> RequireUserNatRuleAsync(string id, string verb, CancellationToken ct)
+    {
+        ThrowUnlessPlainSegment(id);
+        var rule = (await ListNatRulesAsync(ct).ConfigureAwait(false)).FirstOrDefault(r => r.Id == id)
+                   ?? throw new UnifiLegacyException($"{verb} nat: no rule with id '{id}'");
+        if (rule.IsPredefined)
+        {
+            throw new UnifiLegacyException($"{verb} nat: '{rule.Name}' is a predefined rule and is not ours to change");
+        }
+
+        return rule;
+    }
+
+    private static UnifiLiveNatRule ParseNat(JsonObject? r)
+    {
+        if (r is null || r["_id"]?.GetValue<string>() is not { Length: > 0 } id)
+        {
+            throw new UnifiLegacyException("nat: a rule came back without an _id");
+        }
+
+        return new UnifiLiveNatRule(id, r["description"]?.GetValue<string>() ?? "", r["is_predefined"]?.GetValue<bool>() ?? false, r);
+    }
+
+    private Uri NatUrl(string? id = null)
+    {
+        var b = _session.Options.SiteV2Url.AbsoluteUri.TrimEnd('/');
+        return new Uri(id is null ? $"{b}/nat" : $"{b}/nat/{id}");
+    }
+
     private Uri StaticDnsUrl(string? id = null)
     {
         var b = _session.Options.SiteV2Url.AbsoluteUri.TrimEnd('/');
